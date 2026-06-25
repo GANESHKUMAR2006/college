@@ -1,0 +1,284 @@
+const db = require('../config/db');
+
+// Helper to determine contest status dynamically
+function getContestStatus(slug) {
+  if (!slug) return 'RATED';
+  const cleanSlug = slug.toLowerCase();
+  if (cleanSlug.includes('biweekly-contest-126') || cleanSlug.includes('biweekly-contest-127')) {
+    return 'UNRATED';
+  }
+  return 'RATED';
+}
+
+// Helper to parse contest type and number from slug
+function parseContestSlug(slug) {
+  if (!slug) return { contest_type: null, contest_number: 0 };
+  const cleanSlug = slug.toLowerCase();
+  let contest_type = null;
+  let contest_number = 0;
+
+  if (cleanSlug.includes('biweekly')) {
+    contest_type = 'Biweekly';
+  } else if (cleanSlug.includes('weekly')) {
+    contest_type = 'Weekly';
+  }
+
+  const match = cleanSlug.match(/contest-(\d+)/);
+  if (match) {
+    contest_number = parseInt(match[1], 10);
+  }
+
+  return { contest_type, contest_number };
+}
+
+// 1. Get all unique contests with attendance counts and registration status
+async function getContests(req, res) {
+  const { type, startDate, endDate, userId } = req.query;
+  try {
+    let query = `
+      SELECT 
+        c.contest_id,
+        c.slug AS contest_slug, 
+        c.title AS name, 
+        c.start_time AS date, 
+        c.contest_status,
+        c.contest_type,
+        (SELECT COUNT(*) FROM Registrations r WHERE r.contest_id = c.contest_id) AS registration_count,
+        (SELECT COUNT(*) FROM ParticipationLogs p WHERE p.contest_id = c.contest_id) AS attendance_count
+    `;
+    const params = [];
+    if (userId) {
+      query += `,
+        (SELECT COUNT(*) FROM Registrations r WHERE r.contest_id = c.contest_id AND r.user_id = ?) AS is_registered,
+        (SELECT COUNT(*) FROM ParticipationLogs p WHERE p.contest_id = c.contest_id AND p.user_id = ?) AS is_joined
+      `;
+      params.push(userId, userId);
+    }
+    
+    query += ` FROM Contests c`;
+    const conditions = [];
+
+    if (type) {
+      conditions.push(`c.contest_type = ?`);
+      params.push(type.toLowerCase() === 'biweekly' ? 'Biweekly' : 'Weekly');
+    }
+    if (startDate) {
+      conditions.push(`c.start_time >= ?`);
+      params.push(startDate);
+    }
+    if (endDate) {
+      conditions.push(`c.start_time <= ?`);
+      params.push(endDate);
+    }
+
+    if (conditions.length > 0) {
+      query += ` WHERE ` + conditions.join(' AND ');
+    }
+
+    query += ` ORDER BY c.start_time DESC`;
+
+    const contests = await db.query(query, params);
+
+    // Enrich with type and status
+    const enriched = contests.map((c) => {
+      const contestType = c.contest_type ? c.contest_type.toLowerCase() : (c.name.toLowerCase().includes('biweekly') ? 'biweekly' : 'weekly');
+      const status = c.contest_status ? c.contest_status.toUpperCase() : 'RATED';
+      return {
+        id: c.contest_id,
+        contest_id: c.contest_slug,
+        name: c.name,
+        date: c.date,
+        type: contestType,
+        status: status,
+        registration_count: c.registration_count || 0,
+        attendance_count: c.attendance_count || 0,
+        is_registered: userId ? c.is_registered > 0 : false,
+        is_joined: userId ? c.is_joined > 0 : false
+      };
+    });
+
+    return res.json({ success: true, count: enriched.length, data: enriched });
+  } catch (error) {
+    console.error('Error fetching contests:', error);
+    return res.status(500).json({ success: false, message: 'Failed to retrieve contests' });
+  }
+}
+
+// 2. Add contest
+async function addContest(req, res) {
+  const { contestId, name, date, type } = req.body;
+  if (!contestId || !name || !date) {
+    return res.status(400).json({ success: false, message: 'Contest ID (slug), Name, and Date are required.' });
+  }
+  try {
+    const slug = contestId.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const contestType = type.toLowerCase() === 'biweekly' ? 'Biweekly' : 'Weekly';
+    
+    // Parse contest number from slug
+    const match = slug.match(/contest-(\d+)/);
+    const contestNumber = match ? parseInt(match[1], 10) : 0;
+    const dbContestStatus = getContestStatus(slug) === 'UNRATED' ? 'Unrated' : 'Rated';
+
+    await db.query(
+      `INSERT INTO Contests (title, slug, contest_type, contest_number, start_time, contest_status)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [name, slug, contestType, contestNumber, date, dbContestStatus]
+    );
+
+    return res.json({ success: true, message: 'Contest added successfully.' });
+  } catch (error) {
+    console.error('Error adding contest:', error);
+    return res.status(500).json({ success: false, message: 'Failed to add contest. Check if the ID/Slug is unique.' });
+  }
+}
+
+// 3. Edit contest
+async function editContest(req, res) {
+  const { id } = req.params;
+  const { contestId, name, date, type } = req.body;
+  if (!contestId || !name || !date) {
+    return res.status(400).json({ success: false, message: 'Contest ID (slug), Name, and Date are required.' });
+  }
+  try {
+    const slug = contestId.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const contestType = type.toLowerCase() === 'biweekly' ? 'Biweekly' : 'Weekly';
+    
+    const match = slug.match(/contest-(\d+)/);
+    const contestNumber = match ? parseInt(match[1], 10) : 0;
+    const dbContestStatus = getContestStatus(slug) === 'UNRATED' ? 'Unrated' : 'Rated';
+
+    // Verify contest exists
+    const contest = await db.query('SELECT contest_id FROM Contests WHERE contest_id = ? OR slug = ?', [id, id]);
+    if (contest.length === 0) {
+      return res.status(404).json({ success: false, message: 'Contest not found.' });
+    }
+    const realId = contest[0].contest_id;
+
+    await db.query(
+      `UPDATE Contests 
+       SET title = ?, slug = ?, contest_type = ?, contest_number = ?, start_time = ?, contest_status = ?
+       WHERE contest_id = ?`,
+      [name, slug, contestType, contestNumber, date, dbContestStatus, realId]
+    );
+
+    return res.json({ success: true, message: 'Contest updated successfully.' });
+  } catch (error) {
+    console.error('Error editing contest:', error);
+    return res.status(500).json({ success: false, message: 'Failed to update contest.' });
+  }
+}
+
+// 4. Delete contest
+async function deleteContest(req, res) {
+  const { id } = req.params;
+  try {
+    const contest = await db.query('SELECT contest_id FROM Contests WHERE contest_id = ? OR slug = ?', [id, id]);
+    if (contest.length === 0) {
+      return res.status(404).json({ success: false, message: 'Contest not found.' });
+    }
+    const realId = contest[0].contest_id;
+
+    await db.query('DELETE FROM Contests WHERE contest_id = ?', [realId]);
+
+    return res.json({ success: true, message: 'Contest deleted successfully.' });
+  } catch (error) {
+    console.error('Error deleting contest:', error);
+    return res.status(500).json({ success: false, message: 'Failed to delete contest.' });
+  }
+}
+
+// 5. Trigger manual sync
+async function triggerSync(req, res) {
+  const { syncAllData } = require('../utils/scheduler');
+  try {
+    const result = await syncAllData();
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    console.error('Manual sync error:', error);
+    return res.status(500).json({ success: false, message: 'Synchronization failed: ' + error.message });
+  }
+}
+
+// 6. Get sync logs
+async function getSyncLogs(req, res) {
+  try {
+    const logs = await db.query('SELECT * FROM sync_logs ORDER BY started_at DESC LIMIT 50');
+    return res.json({ success: true, data: logs });
+  } catch (error) {
+    console.error('Error fetching sync logs:', error);
+    return res.status(500).json({ success: false, message: 'Failed to retrieve synchronization logs' });
+  }
+}
+
+// 7. Register for contest
+async function registerContest(req, res) {
+  const { userId, contestId } = req.body;
+  if (!userId || !contestId) {
+    return res.status(400).json({ success: false, message: 'User ID and Contest ID are required.' });
+  }
+  try {
+    await db.query(
+      "INSERT IGNORE INTO Registrations (user_id, contest_id) VALUES (?, ?)",
+      [userId, contestId]
+    );
+
+    // Seed default ABSENT attendance record
+    await db.query(
+      `INSERT IGNORE INTO AttendanceRecords (user_id, contest_id, attendance_status, attendance_source)
+       VALUES (?, ?, 'ABSENT', 'AUTO')`,
+      [userId, contestId]
+    );
+
+    return res.json({ success: true, message: 'Registered for contest successfully.' });
+  } catch (error) {
+    console.error('Error registering for contest:', error);
+    return res.status(500).json({ success: false, message: 'Failed to register for contest.' });
+  }
+}
+
+// 8. Join contest
+async function joinContest(req, res) {
+  const { userId, contestId } = req.body;
+  if (!userId || !contestId) {
+    return res.status(400).json({ success: false, message: 'User ID and Contest ID are required.' });
+  }
+  try {
+    // Ensure registered first
+    await db.query(
+      "INSERT IGNORE INTO Registrations (user_id, contest_id) VALUES (?, ?)",
+      [userId, contestId]
+    );
+
+    // Insert to ParticipationLogs
+    await db.query(
+      `INSERT INTO ParticipationLogs (user_id, contest_id, join_time, participation_status)
+       VALUES (?, ?, CURRENT_TIMESTAMP, 'JOINED')
+       ON DUPLICATE KEY UPDATE join_time = CURRENT_TIMESTAMP, participation_status = 'JOINED'`,
+      [userId, contestId]
+    );
+
+    // Mark PRESENT in AttendanceRecords
+    await db.query(
+      `INSERT INTO AttendanceRecords (user_id, contest_id, attendance_status, attendance_source)
+       VALUES (?, ?, 'PRESENT', 'AUTO')
+       ON DUPLICATE KEY UPDATE attendance_status = 'PRESENT', attendance_source = 'AUTO'`,
+      [userId, contestId]
+    );
+
+    return res.json({ success: true, message: 'Joined contest successfully. Attendance marked as PRESENT.' });
+  } catch (error) {
+    console.error('Error joining contest:', error);
+    return res.status(500).json({ success: false, message: 'Failed to join contest.' });
+  }
+}
+
+module.exports = {
+  getContests,
+  addContest,
+  editContest,
+  deleteContest,
+  triggerSync,
+  getSyncLogs,
+  registerContest,
+  joinContest
+};

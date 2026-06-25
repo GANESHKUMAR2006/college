@@ -1,0 +1,492 @@
+const db = require('../config/db');
+
+// Helper to parse dates timezone-independently
+function parseDateOnly(dateInput) {
+  if (!dateInput) return null;
+  const d = new Date(dateInput);
+  if (isNaN(d.getTime())) return null;
+  let dateStr;
+  if (dateInput instanceof Date) {
+    const year = dateInput.getFullYear();
+    const month = String(dateInput.getMonth() + 1).padStart(2, '0');
+    const day = String(dateInput.getDate()).padStart(2, '0');
+    dateStr = `${year}-${month}-${day}`;
+  } else if (typeof dateInput === 'string') {
+    dateStr = dateInput.substring(0, 10);
+  } else {
+    const year = d.getFullYear();
+    const month = String(dateInput.getMonth() + 1).padStart(2, '0');
+    const day = String(dateInput.getDate()).padStart(2, '0');
+    dateStr = `${year}-${month}-${day}`;
+  }
+  const parts = dateStr.split('-');
+  return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10), 0, 0, 0, 0);
+}
+
+// 1. Get Faculty Dashboard Statistics
+async function getDashboardStats(req, res) {
+  try {
+    // Total Students (Active)
+    const [totalStudentsResult] = await db.query(
+      "SELECT COUNT(*) as count FROM Users WHERE status = 'active'"
+    );
+    const totalStudents = totalStudentsResult ? totalStudentsResult.count : 0;
+
+    // Fetch all contests counts
+    const contestsResult = await db.query("SELECT contest_status, contest_type FROM Contests");
+    const totalContests = contestsResult.length;
+    const ratedContests = contestsResult.filter(c => c.contest_status === 'Rated').length;
+    const unratedContests = contestsResult.filter(c => c.contest_status === 'Unrated').length;
+    const cancelledContests = contestsResult.filter(c => c.contest_status === 'Cancelled').length;
+    const weeklyContests = contestsResult.filter(c => c.contest_type === 'Weekly').length;
+    const biweeklyContests = contestsResult.filter(c => c.contest_type === 'Biweekly').length;
+    // Overall Attendance Percentage
+    const [attendancePercentResult] = await db.query(
+      `SELECT 
+         (SELECT COUNT(*) FROM Registrations r JOIN Contests c ON r.contest_id = c.contest_id WHERE c.contest_status = 'Rated' AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND <= NOW()) as total_regs,
+         (SELECT COUNT(*) FROM ParticipationLogs p JOIN Contests c ON p.contest_id = c.contest_id WHERE c.contest_status = 'Rated' AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND <= NOW()) as total_parts`
+    );
+    const totalRegs = attendancePercentResult ? attendancePercentResult.total_regs : 0;
+    const totalParts = attendancePercentResult ? attendancePercentResult.total_parts : 0;
+    const overallAttendance = totalRegs > 0 ? Math.round((totalParts / totalRegs) * 100) : 0;
+
+    // Average Rating
+    const [avgRatingResult] = await db.query(
+      "SELECT AVG(current_rating) as avgRating FROM LeetCodeProfiles lp JOIN Users u ON lp.user_id = u.id WHERE u.status = 'active'"
+    );
+    const averageRating = avgRatingResult && avgRatingResult.avgRating ? Math.round(avgRatingResult.avgRating) : 1500;
+
+    // Recently Synced Records
+    const [latestSyncResult] = await db.query(
+      "SELECT completed_at, contests_synced, students_processed FROM sync_logs WHERE status = 'success' ORDER BY started_at DESC LIMIT 1"
+    );
+    const recentlySynced = latestSyncResult ? {
+      time: latestSyncResult.completed_at,
+      contests: latestSyncResult.contests_synced,
+      students: latestSyncResult.students_processed
+    } : null;
+
+    // Department-wise Stats
+    const deptStats = await db.query(
+      `SELECT u.department, 
+              COUNT(DISTINCT u.id) as total_students,
+              IFNULL((SELECT COUNT(*) FROM Registrations r JOIN Users u2 ON r.user_id = u2.id WHERE u2.department = u.department AND u2.status = 'active'), 0) as total_records,
+              IFNULL((SELECT COUNT(*) FROM ParticipationLogs p JOIN Users u3 ON p.user_id = u3.id WHERE u3.department = u.department AND u3.status = 'active'), 0) as present_count
+       FROM Users u
+       WHERE u.status = 'active'
+       GROUP BY u.department`
+    );
+
+    const departmentStats = deptStats.map(d => ({
+      department: d.department,
+      totalStudents: d.total_students,
+      attendancePercentage: d.total_records > 0 ? Math.round((d.present_count / d.total_records) * 100) : 100
+    }));
+
+    // Weekly Participation Trend (last 10 contests)
+    const weeklyTrend = await db.query(
+      `SELECT c.title as name, c.start_time as date,
+              (SELECT COUNT(*) FROM ParticipationLogs p WHERE p.contest_id = c.contest_id) as present_count,
+              (SELECT COUNT(*) FROM Users WHERE status = 'active') as total_students
+       FROM Contests c
+       ORDER BY c.start_time DESC
+       LIMIT 10`
+    );
+    // Reverse to chronological order for charts
+    weeklyTrend.reverse();
+
+    // Top Active Students (highest current rating)
+    const topStudents = await db.query(
+      `SELECT u.id, u.name, u.roll_no as register_number, u.leetcode_username, u.department,
+              (SELECT COUNT(*) FROM ParticipationLogs p WHERE p.user_id = u.id) as present_count,
+              (SELECT COUNT(*) FROM Registrations r WHERE r.user_id = u.id) as total_contests,
+              ROUND(IFNULL(lp.current_rating, 1500)) as current_rating
+       FROM Users u
+       LEFT JOIN LeetCodeProfiles lp ON u.id = lp.user_id
+       WHERE u.status = 'active'
+       ORDER BY current_rating DESC, present_count DESC
+       LIMIT 5`
+    );
+
+    // Students with Low Attendance (< 10%)
+    const lowAttendanceStudents = await db.query(
+      `SELECT u.id, u.name, u.roll_no as register_number, u.department, u.section,
+              (SELECT COUNT(*) FROM Registrations r WHERE r.user_id = u.id) as total_contests,
+              (SELECT COUNT(*) FROM ParticipationLogs p WHERE p.user_id = u.id) as present_count,
+              ROUND((SELECT COUNT(*) FROM ParticipationLogs p WHERE p.user_id = u.id) / NULLIF((SELECT COUNT(*) FROM Registrations r WHERE r.user_id = u.id), 0) * 100) as attendance_percentage
+       FROM Users u
+       WHERE u.status = 'active' AND (SELECT COUNT(*) FROM Registrations r WHERE r.user_id = u.id) >= 3 AND (SELECT COUNT(*) FROM ParticipationLogs p WHERE p.user_id = u.id) / NULLIF((SELECT COUNT(*) FROM Registrations r WHERE r.user_id = u.id), 0) * 100 < 10
+       ORDER BY attendance_percentage ASC
+       LIMIT 10`
+    );
+
+    // Recently Added Contests (last 2 weeks)
+    const recentContests = await db.query(
+      `SELECT title as name, start_time as date 
+       FROM Contests 
+       WHERE start_time >= DATE_SUB(CURDATE(), INTERVAL 14 DAY)
+       ORDER BY start_time DESC`
+    );
+
+    return res.json({
+      success: true,
+      stats: {
+        totalStudents,
+        totalActiveStudents: totalStudents,
+        totalContests,
+        ratedContests,
+        unratedContests,
+        cancelledContests,
+        weeklyContests,
+        biweeklyContests,
+        overallAttendance,
+        averageRating,
+        recentlySynced
+      },
+      departmentStats,
+      weeklyTrend,
+      topStudents,
+      alerts: {
+        missingUploads: [],
+        lowAttendanceStudents,
+        recentContests
+      }
+    });
+  } catch (error) {
+    console.error('Error generating dashboard stats:', error);
+    return res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+}
+
+// 2. Get Contest-wise Summary Report
+async function getContestsReport(req, res) {
+  const { batch } = req.query;
+  try {
+    let sql = '';
+    let params = [];
+
+    if (batch) {
+      sql = `
+        SELECT c.title as name, c.slug as contest_slug, c.contest_status, c.start_time as date, c.duration,
+               (SELECT COUNT(*) FROM Users WHERE status = 'active' AND academic_batch = ?) as total_students,
+               (SELECT COUNT(*) FROM ParticipationLogs p JOIN Users u ON p.user_id = u.id WHERE p.contest_id = c.contest_id AND u.academic_batch = ?) as present_count,
+               (SELECT COUNT(*) FROM Registrations r JOIN Users u ON r.user_id = u.id WHERE r.contest_id = c.contest_id AND u.academic_batch = ?) - 
+               (SELECT COUNT(*) FROM ParticipationLogs p JOIN Users u ON p.user_id = u.id WHERE p.contest_id = c.contest_id AND u.academic_batch = ?) as absent_count,
+               0 as not_applicable_count,
+               CASE
+                 WHEN c.start_time <= NOW() AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND > NOW() THEN 0
+                 WHEN c.contest_status = 'Unrated' THEN 0
+                 ELSE IFNULL(ROUND(
+                   (SELECT COUNT(*) FROM ParticipationLogs p JOIN Users u ON p.user_id = u.id WHERE p.contest_id = c.contest_id AND u.academic_batch = ?) / 
+                   NULLIF((SELECT COUNT(*) FROM Registrations r JOIN Users u ON r.user_id = u.id WHERE r.contest_id = c.contest_id AND u.academic_batch = ?), 0) * 100
+                 ), 100)
+               END as attendance_percentage
+        FROM Contests c
+        ORDER BY c.start_time DESC
+      `;
+      params = [batch, batch, batch, batch, batch, batch];
+    } else {
+      sql = `
+        SELECT c.title as name, c.slug as contest_slug, c.contest_status, c.start_time as date, c.duration,
+               (SELECT COUNT(*) FROM Users WHERE status = 'active') as total_students,
+               (SELECT COUNT(*) FROM ParticipationLogs p WHERE p.contest_id = c.contest_id) as present_count,
+               (SELECT COUNT(*) FROM Registrations r WHERE r.contest_id = c.contest_id) - (SELECT COUNT(*) FROM ParticipationLogs p WHERE p.contest_id = c.contest_id) as absent_count,
+               0 as not_applicable_count,
+               CASE
+                 WHEN c.start_time <= NOW() AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND > NOW() THEN 0
+                 WHEN c.contest_status = 'Unrated' THEN 0
+                 ELSE IFNULL(ROUND((SELECT COUNT(*) FROM ParticipationLogs p WHERE p.contest_id = c.contest_id) / NULLIF((SELECT COUNT(*) FROM Registrations r WHERE r.contest_id = c.contest_id), 0) * 100), 100)
+               END as attendance_percentage
+        FROM Contests c
+        ORDER BY c.start_time DESC
+      `;
+    }
+
+    const report = await db.query(sql, params);
+
+    const formatted = report.map(r => ({
+      ...r,
+      type: r.name.toLowerCase().includes('biweekly') ? 'biweekly' : 'weekly'
+    }));
+
+    return res.json({ success: true, data: formatted });
+  } catch (error) {
+    console.error('Error generating contests report:', error);
+    return res.status(500).json({ success: false, message: 'Failed to generate report' });
+  }
+}
+
+// 3. Get Student-wise Summary Report
+async function getStudentsReport(req, res) {
+  const { department, section, academicBatch, academicYear, startDate, endDate } = req.query;
+  const batch = academicBatch || academicYear;
+  
+  let sql = `
+    SELECT u.id, u.roll_no as register_number, u.name, u.department, u.section, u.academic_batch as academic_year, u.leetcode_username,
+           (SELECT COUNT(*) FROM Registrations r WHERE r.user_id = u.id) as total_contests,
+           (SELECT COUNT(*) FROM Registrations r JOIN Contests c ON r.contest_id = c.contest_id 
+            WHERE r.user_id = u.id AND c.contest_status = 'Rated' AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND <= NOW()) as rated_contests,
+           (SELECT COUNT(*) FROM Registrations r JOIN Contests c ON r.contest_id = c.contest_id 
+            WHERE r.user_id = u.id AND c.contest_status = 'Unrated') as unrated_contests,
+           (SELECT COUNT(*) FROM ParticipationLogs p JOIN Contests c ON p.contest_id = c.contest_id 
+            WHERE p.user_id = u.id AND c.contest_status = 'Rated' AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND <= NOW()) as present_count,
+           (SELECT COUNT(*) FROM Registrations r JOIN Contests c ON r.contest_id = c.contest_id 
+            WHERE r.user_id = u.id AND c.contest_status = 'Rated' AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND <= NOW()) -
+           (SELECT COUNT(*) FROM ParticipationLogs p JOIN Contests c ON p.contest_id = c.contest_id 
+            WHERE p.user_id = u.id AND c.contest_status = 'Rated' AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND <= NOW()) as absent_count,
+           ROUND(IFNULL(
+             (SELECT COUNT(*) FROM ParticipationLogs p JOIN Contests c ON p.contest_id = c.contest_id 
+              WHERE p.user_id = u.id AND c.contest_status = 'Rated' AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND <= NOW()) /
+             NULLIF(
+               (SELECT COUNT(*) FROM Registrations r JOIN Contests c ON r.contest_id = c.contest_id 
+                WHERE r.user_id = u.id AND c.contest_status = 'Rated' AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND <= NOW()), 0
+             ) * 100, 100
+           )) as attendance_percentage,
+           ROUND(IFNULL(lp.current_rating, 1500)) as current_rating,
+           ROUND(IFNULL(lp.highest_rating, 1500)) as best_rating,
+           IFNULL(
+             (
+               SELECT GROUP_CONCAT(
+                 CASE 
+                   WHEN c.start_time <= NOW() AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND > NOW() THEN 'Ongoing'
+                   WHEN c.contest_status = 'Unrated' THEN 'Unrated'
+                   WHEN ar.attendance_status = 'PRESENT' THEN 'Present'
+                   ELSE 'Absent'
+                 END 
+                 ORDER BY c.start_time DESC
+               )
+               FROM AttendanceRecords ar
+               JOIN Contests c ON ar.contest_id = c.contest_id
+               WHERE ar.user_id = u.id
+             ),
+             'No History'
+           ) as rank_history
+    FROM Users u
+    LEFT JOIN LeetCodeProfiles lp ON u.id = lp.user_id
+    WHERE u.status = 'active'
+  `;
+  const params = [];
+
+  if (department) {
+    sql += ' AND u.department = ?';
+    params.push(department);
+  }
+  if (section) {
+    sql += ' AND u.section = ?';
+    params.push(section);
+  }
+  if (batch) {
+    sql += ' AND u.academic_batch = ?';
+    params.push(batch);
+  }
+  if (startDate) {
+    sql += ' AND u.academic_start_date >= ?';
+    params.push(startDate);
+  }
+  if (endDate) {
+    sql += ' AND u.academic_end_date <= ?';
+    params.push(endDate);
+  }
+
+  sql += ' ORDER BY u.roll_no ASC';
+
+  try {
+    const report = await db.query(sql, params);
+    return res.json({ success: true, data: report });
+  } catch (error) {
+    console.error('Error generating students report:', error);
+    return res.status(500).json({ success: false, message: 'Failed to generate report' });
+  }
+}
+
+// 4. Department-wise Comparison
+async function getDepartmentReport(req, res) {
+  try {
+    const report = await db.query(
+      `SELECT u.department,
+              COUNT(DISTINCT u.id) as total_students,
+              IFNULL(SUM((SELECT COUNT(*) FROM Registrations r JOIN Contests c ON r.contest_id = c.contest_id WHERE r.user_id = u.id AND c.contest_status = 'Rated' AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND <= NOW())), 0) as total_records,
+              IFNULL(SUM((SELECT COUNT(*) FROM ParticipationLogs p JOIN Contests c ON p.contest_id = c.contest_id WHERE p.user_id = u.id AND c.contest_status = 'Rated' AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND <= NOW())), 0) as present_count,
+              IFNULL(ROUND((SUM((SELECT COUNT(*) FROM ParticipationLogs p JOIN Contests c ON p.contest_id = c.contest_id WHERE p.user_id = u.id AND c.contest_status = 'Rated' AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND <= NOW())) / NULLIF(SUM((SELECT COUNT(*) FROM Registrations r JOIN Contests c ON r.contest_id = c.contest_id WHERE r.user_id = u.id AND c.contest_status = 'Rated' AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND <= NOW())), 0)) * 100), 100) as attendance_percentage
+       FROM Users u
+       WHERE u.status = 'active'
+       GROUP BY u.department
+       ORDER BY attendance_percentage DESC`
+    );
+    return res.json({ success: true, data: report });
+  } catch (error) {
+    console.error('Error generating department report:', error);
+    return res.status(500).json({ success: false, message: 'Failed to generate report' });
+  }
+}
+
+// 5. Section-wise Comparison
+async function getSectionReport(req, res) {
+  try {
+    const report = await db.query(
+      `SELECT u.department, u.section,
+              COUNT(DISTINCT u.id) as total_students,
+              IFNULL(SUM((SELECT COUNT(*) FROM Registrations r JOIN Contests c ON r.contest_id = c.contest_id WHERE r.user_id = u.id AND c.contest_status = 'Rated' AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND <= NOW())), 0) as total_records,
+              IFNULL(SUM((SELECT COUNT(*) FROM ParticipationLogs p JOIN Contests c ON p.contest_id = c.contest_id WHERE p.user_id = u.id AND c.contest_status = 'Rated' AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND <= NOW())), 0) as present_count,
+              IFNULL(ROUND((SUM((SELECT COUNT(*) FROM ParticipationLogs p JOIN Contests c ON p.contest_id = c.contest_id WHERE p.user_id = u.id AND c.contest_status = 'Rated' AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND <= NOW())) / NULLIF(SUM((SELECT COUNT(*) FROM Registrations r JOIN Contests c ON r.contest_id = c.contest_id WHERE r.user_id = u.id AND c.contest_status = 'Rated' AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND <= NOW())), 0)) * 100), 100) as attendance_percentage
+       FROM Users u
+       WHERE u.status = 'active'
+       GROUP BY u.department, u.section
+       ORDER BY u.department ASC, u.section ASC`
+    );
+    return res.json({ success: true, data: report });
+  } catch (error) {
+    console.error('Error generating section report:', error);
+    return res.status(500).json({ success: false, message: 'Failed to generate report' });
+  }
+}
+
+// 6. Heatmap Data (matrix of Student presence across recent 8 contests)
+async function getAttendanceHeatmap(req, res) {
+  try {
+    // Get recent 8 contests overall
+    const recentContests = await db.query(
+      `SELECT contest_id, title as name, start_time as date, contest_status, duration
+       FROM Contests
+       ORDER BY start_time DESC
+       LIMIT 8`
+    );
+    // Reverse to chronological
+    recentContests.reverse();
+
+    if (recentContests.length === 0) {
+      return res.json({ success: true, contests: [], students: [] });
+    }
+
+    const contestIds = recentContests.map(c => c.contest_id);
+    const placeHolders = contestIds.map(() => '?').join(',');
+
+    // Get active students' attendance for these contests
+    const rawHeatmap = await db.query(
+      `SELECT u.id as student_id, u.name, u.roll_no as register_number, u.leetcode_username,
+              u.academic_start_date, u.academic_end_date,
+              ar.contest_id, ar.attendance_status
+       FROM Users u
+       LEFT JOIN AttendanceRecords ar ON u.id = ar.user_id AND ar.contest_id IN (${placeHolders})
+       WHERE u.status = 'active'
+       ORDER BY u.roll_no ASC`,
+      contestIds
+    );
+
+    const contestDatesMap = new Map();
+    recentContests.forEach(c => {
+      contestDatesMap.set(c.contest_id, new Date(c.date));
+    });
+
+    // Format matrix: Group by student
+    const studentHeatmapMap = new Map();
+    rawHeatmap.forEach(row => {
+      if (!studentHeatmapMap.has(row.student_id)) {
+        studentHeatmapMap.set(row.student_id, {
+          studentId: row.student_id,
+          name: row.name,
+          registerNumber: row.register_number,
+          leetcodeUsername: row.leetcode_username,
+          academic_start_date: row.academic_start_date,
+          academic_end_date: row.academic_end_date,
+          attendance: {} // contestId -> status
+        });
+      }
+      if (row.contest_id) {
+        studentHeatmapMap.get(row.student_id).attendance[row.contest_id] = row.attendance_status === 'PRESENT' ? 'present' : 'absent';
+      }
+    });
+
+    const studentsData = Array.from(studentHeatmapMap.values()).map(student => {
+      const start = parseDateOnly(student.academic_start_date);
+      const end = parseDateOnly(student.academic_end_date);
+      end.setHours(23, 59, 59, 999);
+
+      const timeline = contestIds.map(cid => {
+        const cDateRaw = contestDatesMap.get(cid);
+        const cDate = parseDateOnly(cDateRaw);
+        const isEligible = cDate && cDate >= start && cDate <= end;
+        
+        const contestInfo = recentContests.find(c => c.contest_id === cid);
+        const startTime = new Date(cDateRaw);
+        const durationMs = (contestInfo?.duration || 5400) * 1000;
+        const endTime = new Date(startTime.getTime() + durationMs);
+        const isOngoing = startTime <= new Date() && endTime > new Date();
+        const isUnrated = contestInfo?.contest_status === 'Unrated';
+        
+        if (!isEligible) {
+          return 'not_applicable';
+        }
+        if (isOngoing) {
+          return 'ongoing';
+        }
+        if (isUnrated) {
+          return 'unrated';
+        }
+        return student.attendance[cid] || 'absent';
+      });
+
+      return {
+        studentId: student.studentId,
+        name: student.name,
+        registerNumber: student.registerNumber,
+        leetcodeUsername: student.leetcodeUsername,
+        timeline
+      };
+    });
+
+    // Format contests list to include a mock id
+    const contestsList = recentContests.map((c, idx) => ({
+      id: c.contest_id,
+      name: c.name,
+      date: c.date
+    }));
+
+    return res.json({
+      success: true,
+      contests: contestsList,
+      students: studentsData
+    });
+  } catch (error) {
+    console.error('Error generating heatmap:', error);
+    return res.status(500).json({ success: false, message: 'Failed to generate heatmap data' });
+  }
+}
+
+// 7. Get Detailed Attendance Log (Student-Contest records)
+async function getAttendanceLog(req, res) {
+  try {
+    const log = await db.query(
+      `SELECT u.roll_no as register_number, u.name as student_name, u.department, u.section,
+              c.title as contest_name, c.start_time as contest_date, c.contest_status,
+              CASE 
+                WHEN c.start_time >= u.academic_start_date AND c.start_time <= u.academic_end_date THEN
+                  CASE
+                    WHEN c.start_time <= NOW() AND c.start_time + INTERVAL IFNULL(c.duration, 5400) SECOND > NOW() THEN 'ONGOING'
+                    WHEN c.contest_status = 'Unrated' THEN 'UNRATED'
+                    ELSE ar.attendance_status
+                  END
+                ELSE 'NOT_APPLICABLE'
+              END as attendance_status
+       FROM AttendanceRecords ar
+       JOIN Users u ON ar.user_id = u.id
+       JOIN Contests c ON ar.contest_id = c.contest_id
+       WHERE u.status = 'active'
+       ORDER BY c.start_time DESC, u.roll_no ASC`
+    );
+    return res.json({ success: true, data: log });
+  } catch (error) {
+    console.error('Error generating attendance log report:', error);
+    return res.status(500).json({ success: false, message: 'Failed to generate attendance log report' });
+  }
+}
+
+module.exports = {
+  getDashboardStats,
+  getContestsReport,
+  getStudentsReport,
+  getDepartmentReport,
+  getSectionReport,
+  getAttendanceHeatmap,
+  getAttendanceLog
+};

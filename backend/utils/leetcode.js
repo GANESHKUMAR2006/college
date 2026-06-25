@@ -1,0 +1,493 @@
+const https = require('https');
+const { exec } = require('child_process');
+
+/**
+ * Generic helper to query LeetCode GraphQL API
+ * @param {string} query - GraphQL query string
+ * @param {object} variables - Query variables
+ * @returns {Promise<object>} - Parse JSON response
+ */
+function queryLeetCode(query, variables = {}) {
+  return new Promise((resolve, reject) => {
+    const postData = JSON.stringify({ query, variables });
+    
+    const options = {
+      hostname: 'leetcode.com',
+      path: '/graphql/',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData),
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://leetcode.com/'
+      },
+      timeout: 10000 // 10 seconds timeout
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      res.on('end', () => {
+        if (res.statusCode === 200) {
+          try {
+            const json = JSON.parse(data);
+            if (json.errors && json.errors.length > 0) {
+              reject(new Error(json.errors[0].message));
+            } else {
+              resolve(json);
+            }
+          } catch (e) {
+            reject(new Error(`Failed to parse LeetCode response: ${e.message}`));
+          }
+        } else {
+          reject(new Error(`LeetCode API returned status code ${res.statusCode}`));
+        }
+      });
+    });
+
+    req.on('error', (e) => {
+      reject(new Error(`Network error connecting to LeetCode: ${e.message}`));
+    });
+
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error('LeetCode GraphQL request timed out'));
+    });
+
+    req.write(postData);
+    req.end();
+  });
+}
+
+/**
+ * Verifies if a LeetCode username exists on LeetCode.com and retrieves basic ranking stats
+ * @param {string} username - LeetCode username to verify
+ * @returns {Promise<{exists: boolean, username?: string, rating?: number, globalRanking?: number, error?: string}>}
+ */
+async function verifyLeetCodeUsername(username) {
+  if (!username || typeof username !== 'string') {
+    return { exists: false, error: 'Invalid username' };
+  }
+
+  const trimmedUsername = username.trim();
+  if (trimmedUsername === '') {
+    return { exists: false, error: 'Username cannot be empty' };
+  }
+
+  const profileQuery = `
+    query getUserProfile($username: String!) {
+      matchedUser(username: $username) {
+        username
+      }
+      userContestRanking(username: $username) {
+        rating
+        globalRanking
+      }
+    }
+  `;
+
+  try {
+    const json = await queryLeetCode(profileQuery, { username: trimmedUsername });
+    if (json.data && json.data.matchedUser) {
+      const stats = json.data.userContestRanking || {};
+      return {
+        exists: true,
+        username: json.data.matchedUser.username,
+        rating: stats.rating ? Math.round(stats.rating) : null,
+        globalRanking: stats.globalRanking || null
+      };
+    } else {
+      return { exists: false };
+    }
+  } catch (err) {
+    return { exists: false, error: err.message };
+  }
+}
+
+/**
+ * Fetches all recent contests list from LeetCode
+ * @returns {Promise<Array<{title: string, titleSlug: string, startTime: number, duration: number}>>}
+ */
+async function getRecentContests() {
+  const contestsQuery = `
+    query {
+      allContests {
+        title
+        titleSlug
+        startTime
+        duration
+      }
+    }
+  `;
+
+  try {
+    const json = await queryLeetCode(contestsQuery);
+    if (json.data && json.data.allContests) {
+      // Filter out and clean up only Weekly and Biweekly contests
+      return json.data.allContests.filter(c => 
+        c.title.toLowerCase().startsWith('weekly contest') || 
+        c.title.toLowerCase().startsWith('biweekly contest')
+      );
+    }
+    return [];
+  } catch (err) {
+    console.error('[LeetCode Crawler] Error fetching recent contests:', err.message);
+    throw err;
+  }
+}
+
+/**
+ * Fetches contest ranking and participation history for a single user
+ * @param {string} username - LeetCode username
+ * @returns {Promise<Array<{attended: boolean, problemsSolved: number, totalProblems: number, rating: number, ranking: number, contest: {title: string, startTime: number}}>>}
+ */
+async function getUserContestHistory(username) {
+  const historyQuery = `
+    query userContestRankingHistory($username: String!) {
+      userContestRankingHistory(username: $username) {
+        attended
+        problemsSolved
+        totalProblems
+        rating
+        ranking
+        contest {
+          title
+          startTime
+        }
+      }
+    }
+  `;
+
+  try {
+    const json = await queryLeetCode(historyQuery, { username });
+    if (json.data && json.data.userContestRankingHistory) {
+      return json.data.userContestRankingHistory;
+    }
+    return [];
+  } catch (err) {
+    console.error(`[LeetCode Crawler] Error fetching contest history for ${username}:`, err.message);
+    throw err;
+  }
+}
+
+/**
+ * Fetches one page of contest ranking from LeetCode
+ * @param {string} contestSlug - LeetCode contest slug
+ * @param {number} page - Page number to fetch
+ * @returns {Promise<object>} - Page ranking data
+ */
+function getContestRankingPage(contestSlug, page = 1) {
+  const url = `https://leetcode.com/contest/api/ranking/${contestSlug}/?pagination=${page}`;
+  const cmd = `curl.exe -s -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "${url}"`;
+  
+  return new Promise((resolve, reject) => {
+    exec(cmd, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        // Fallback to standard request
+        console.warn(`[LeetCode API Warning] Curl failed: ${err.message}. Falling back to standard HTTPS request.`);
+        const options = {
+          hostname: 'leetcode.com',
+          path: `/contest/api/ranking/${contestSlug}/?pagination=${page}`,
+          method: 'GET',
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+          },
+          timeout: 10000
+        };
+
+        const req = https.request(options, (res) => {
+          let data = '';
+          res.on('data', (chunk) => {
+            data += chunk;
+          });
+          res.on('end', () => {
+            if (res.statusCode === 200) {
+              try {
+                const json = JSON.parse(data);
+                resolve(json);
+              } catch (e) {
+                reject(new Error(`Failed to parse LeetCode response: ${e.message}`));
+              }
+            } else {
+              reject(new Error(`LeetCode API returned status code ${res.statusCode}`));
+            }
+          });
+        });
+
+        req.on('error', (e) => {
+          reject(new Error(`Network error connecting to LeetCode: ${e.message}`));
+        });
+
+        req.on('timeout', () => {
+          req.destroy();
+          reject(new Error('LeetCode contest ranking request timed out'));
+        });
+
+        req.end();
+        return;
+      }
+      
+      try {
+        const json = JSON.parse(stdout);
+        resolve(json);
+      } catch (parseErr) {
+        reject(new Error(`Failed to parse LeetCode response: ${parseErr.message}`));
+      }
+    });
+  });
+}
+
+/**
+ * Fetches page 1 of contest ranking to check accessibility and get the top participant
+ * @param {string} contestSlug - LeetCode contest slug
+ * @returns {Promise<{accessible: boolean, topParticipant?: string, data?: object}>}
+ */
+async function getContestRankingPage1(contestSlug) {
+  try {
+    const data = await getContestRankingPage(contestSlug, 1);
+    if (data && data.total_rank && data.total_rank.length > 0) {
+      const topParticipant = data.total_rank[0].username;
+      return { accessible: true, topParticipant, data };
+    }
+    return { accessible: true };
+  } catch (err) {
+    console.error(`[LeetCode Crawler] Contest ${contestSlug} ranking page 1 inaccessible:`, err.message);
+    return { accessible: false };
+  }
+}
+
+/**
+ * Fetches comprehensive LeetCode statistics for a user
+ * @param {string} username - LeetCode username
+ * @returns {Promise<object>} - Object with solved counts, ratings, global rank, active days, etc.
+ */
+async function getUserLeetCodeStats(username) {
+  if (!username || typeof username !== 'string') {
+    return { success: false, error: 'Invalid username' };
+  }
+  const trimmedUsername = username.trim();
+  if (trimmedUsername === '') {
+    return { success: false, error: 'Username cannot be empty' };
+  }
+
+  const statsQuery = `
+    query userLeetCodeStats($username: String!) {
+      matchedUser(username: $username) {
+        submitStats {
+          acSubmissionNum {
+            difficulty
+            count
+          }
+        }
+        userCalendar {
+          totalActiveDays
+        }
+      }
+      userContestRanking(username: $username) {
+        rating
+        globalRanking
+        attendedContestsCount
+      }
+    }
+  `;
+
+  try {
+    const json = await queryLeetCode(statsQuery, { username: trimmedUsername });
+    if (json.data && json.data.matchedUser) {
+      const submitStats = json.data.matchedUser.submitStats?.acSubmissionNum || [];
+      const userCalendar = json.data.matchedUser.userCalendar || {};
+      const contestRanking = json.data.userContestRanking || {};
+
+      const solvedStats = {};
+      submitStats.forEach(item => {
+        solvedStats[item.difficulty] = item.count;
+      });
+
+      return {
+        success: true,
+        username: trimmedUsername,
+        totalSolved: solvedStats['All'] || 0,
+        easySolved: solvedStats['Easy'] || 0,
+        mediumSolved: solvedStats['Medium'] || 0,
+        hardSolved: solvedStats['Hard'] || 0,
+        activeDays: userCalendar.totalActiveDays || 0,
+        contestRating: contestRanking.rating ? Math.round(contestRanking.rating) : null,
+        globalRanking: contestRanking.globalRanking || null,
+        contestParticipationCount: contestRanking.attendedContestsCount || 0
+      };
+    } else {
+      return { success: false, error: 'User not found on LeetCode' };
+    }
+  } catch (err) {
+    console.error(`[LeetCode Stats] Error fetching stats for ${trimmedUsername}:`, err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Fetches recent submissions of a LeetCode user
+ * @param {string} username - LeetCode username
+ * @param {number} limit - Number of submissions to fetch (default: 100)
+ * @returns {Promise<Array<{title: string, titleSlug: string, timestamp: string, statusDisplay: string, lang: string}>>}
+ */
+async function getUserSubmissions(username, limit = 100) {
+  if (!username) return [];
+  const submissionsQuery = `
+    query recentSubmissionList($username: String!, $limit: Int) {
+      recentSubmissionList(username: $username, limit: $limit) {
+        title
+        titleSlug
+        timestamp
+        statusDisplay
+        lang
+      }
+    }
+  `;
+
+  try {
+    const json = await queryLeetCode(submissionsQuery, { username, limit });
+    if (json.data && json.data.recentSubmissionList) {
+      return json.data.recentSubmissionList;
+    }
+    return [];
+  } catch (err) {
+    console.error(`[LeetCode Crawler] Error fetching submissions for ${username}:`, err.message);
+    throw err;
+  }
+}
+
+/**
+ * Fetches userContestRanking details for a single user
+ * @param {string} username - LeetCode username
+ * @returns {Promise<object>} - userContestRanking object { rating, globalRanking, attendedContestsCount, etc. }
+ */
+async function getUserContestRanking(username) {
+  const rankingQuery = `
+    query userContestRanking($username: String!) {
+      userContestRanking(username: $username) {
+        attendedContestsCount
+        rating
+        globalRanking
+        topPercentage
+        totalParticipants
+      }
+    }
+  `;
+  try {
+    const json = await queryLeetCode(rankingQuery, { username });
+    if (json.data && json.data.userContestRanking) {
+      return json.data.userContestRanking;
+    }
+    return null;
+  } catch (err) {
+    console.error(`[LeetCode Crawler] Error fetching contest ranking for ${username}:`, err.message);
+    throw err;
+  }
+}
+
+/**
+ * Fetches combined userContestRanking and userContestRankingHistory for a user
+ * @param {string} username - LeetCode username
+ * @returns {Promise<{userContestRanking: object, userContestRankingHistory: Array}>}
+ */
+async function getUserContestRankingAndHistory(username) {
+  if (!username) {
+    return { userContestRanking: null, userContestRankingHistory: [] };
+  }
+  const query = `
+    query getUserContestRankingAndHistory($username: String!) {
+      userContestRanking(username: $username) {
+        rating
+        attendedContestsCount
+        globalRanking
+      }
+      userContestRankingHistory(username: $username) {
+        attended
+        rating
+        ranking
+        problemsSolved
+        totalProblems
+        contest {
+          title
+          startTime
+        }
+      }
+    }
+  `;
+
+  try {
+    const json = await queryLeetCode(query, { username });
+    
+    // Print the entire API response before processing
+    console.log("---------------- [RAW LEETCODE API RESPONSE] ----------------");
+    console.log(JSON.stringify(json, null, 2));
+    console.log("-------------------------------------------------------------");
+
+    // Verification step
+    if (json && json.data) {
+      const history = json.data.userContestRankingHistory;
+      if (!history || history.length === 0) {
+        console.warn(`[Verification Alert] userContestRankingHistory is empty or null for ${username}`);
+      } else {
+        console.log(`[Verification Success] userContestRankingHistory loaded with ${history.length} records.`);
+        
+        // Verify: contest titles are returned, attended field exists, problemsSolved exists
+        let missingTitles = false;
+        let missingAttended = false;
+        let missingSolved = false;
+
+        history.forEach((h, idx) => {
+          if (!h.contest || typeof h.contest.title !== 'string') {
+            missingTitles = true;
+          }
+          if (h.attended === undefined || h.attended === null) {
+            missingAttended = true;
+          }
+          if (h.problemsSolved === undefined || h.problemsSolved === null) {
+            missingSolved = true;
+          }
+        });
+
+        if (missingTitles) {
+          console.warn("[Verification Alert] Some entries are missing contest titles.");
+        } else {
+          console.log("[Verification Success] Contest titles verified.");
+        }
+
+        if (missingAttended) {
+          console.warn("[Verification Alert] Some entries are missing the 'attended' field.");
+        } else {
+          console.log("[Verification Success] Attended field verified.");
+        }
+
+        if (missingSolved) {
+          console.warn("[Verification Alert] Some entries are missing 'problemsSolved' field.");
+        } else {
+          console.log("[Verification Success] problemsSolved field verified.");
+        }
+      }
+    } else {
+      console.warn(`[Verification Alert] GraphQL response has no data field for ${username}`);
+    }
+
+    return json.data || { userContestRanking: null, userContestRankingHistory: [] };
+  } catch (err) {
+    console.error(`[LeetCode Crawler] Error in getUserContestRankingAndHistory for ${username}:`, err.message);
+    throw err;
+  }
+}
+
+module.exports = {
+  verifyLeetCodeUsername,
+  getRecentContests,
+  getUserContestHistory,
+  getContestRankingPage,
+  getContestRankingPage1,
+  getUserLeetCodeStats,
+  getUserSubmissions,
+  getUserContestRanking,
+  getUserContestRankingAndHistory
+};
+

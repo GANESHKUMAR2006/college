@@ -1,0 +1,37 @@
+[
+  {
+    "contest_name": "Weekly Contest 423",
+    "contest_slug": "weekly-contest-423",
+    "contest_date": "2024-11-10T02:30:00.000Z",
+    "contest_status": "RATED",
+    "contest_url": "https://leetcode.com/contest/weekly-contest-423"
+  },
+  {
+    "contest_name": "Weekly Contest 440",
+    "contest_slug": "weekly-contest-440",
+    "contest_date": "2025-03-09T02:30:00.000Z",
+    "contest_status": "RATED",
+    "contest_url": "https://leetcode.com/contest/weekly-contest-440"
+  },
+  {
+    "contest_name": "Biweekly Contest 160",
+    "contest_slug": "biweekly-contest-160",
+    "contest_date": "2024-11-23T14:30:00.000Z",
+    "contest_status": "RATED",
+    "contest_url": "https://leetcode.com/contest/biweekly-contest-160"
+  },
+  {
+    "contest_name": "Weekly Contest 441",
+    "contest_slug": "weekly-contest-441",
+    "contest_date": "2025-03-16T02:30:00.000Z",
+    "contest_status": "RATED",
+    "contest_url": "https://leetcode.com/contest/weekly-contest-441"
+  },
+  {
+    "contest_name": "Biweekly Contest 126",
+    "contest_slug": "biweekly-contest-126",
+    "contest_date": "2024-10-12T14:30:00.000Z",
+    "contest_status": "UNRATED",
+    "contest_url": "https://leetcode.com/contest/biweekly-contest-126"
+  }
+]
