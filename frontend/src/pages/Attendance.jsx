@@ -17,10 +17,20 @@ import {
   ExternalLink,
   Trophy,
   Crown,
-  BookOpen
+  BookOpen,
+  RefreshCw
 } from 'lucide-react';
 
 function Attendance() {
+  const [activeTab, setActiveTab] = useState('sheet');
+  const [systemHealth, setSystemHealth] = useState(null);
+  const [jobs, setJobs] = useState([]);
+  const [loadingHealth, setLoadingHealth] = useState(false);
+  const [loadingJobs, setLoadingJobs] = useState(false);
+  const [isBackfilling, setIsBackfilling] = useState(false);
+  const [backfillProgress, setBackfillProgress] = useState(0);
+  const [backfillMessage, setBackfillMessage] = useState('');
+
   const [contests, setContests] = useState([]);
   const [selectedContestId, setSelectedContestId] = useState('');
   const [selectedBatch, setSelectedBatch] = useState('');
@@ -50,6 +60,112 @@ function Attendance() {
   const [overrideStatus, setOverrideStatus] = useState('present');
   const [overrideRemarks, setOverrideRemarks] = useState('');
   const [savingOverride, setSavingOverride] = useState(false);
+
+  const fetchSystemHealth = async () => {
+    setLoadingHealth(true);
+    try {
+      const res = await axios.get('/api/health');
+      setSystemHealth(res.data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingHealth(false);
+    }
+  };
+
+  const fetchJobs = async () => {
+    setLoadingJobs(true);
+    try {
+      const res = await axios.get('/api/jobs');
+      if (res.data.success) {
+        setJobs(res.data.data);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingJobs(false);
+    }
+  };
+
+  const handleTriggerSync = async () => {
+    setError('');
+    setSuccess('');
+    try {
+      const res = await axios.post('/api/jobs/sync');
+      if (res.data.success) {
+        setSuccess('Manual platform synchronization enqueued successfully.');
+        fetchJobs();
+      }
+    } catch (e) {
+      setError('Failed to trigger synchronization: ' + (e.response?.data?.message || e.message));
+    }
+  };
+
+  const handleTriggerBackfill = async () => {
+    setError('');
+    setSuccess('');
+    setIsBackfilling(true);
+    setBackfillProgress(5);
+    setBackfillMessage('Enqueuing attendance backfill job...');
+    try {
+      const res = await axios.post('/api/jobs/backfill');
+      if (res.data.success) {
+        const jobId = res.data.jobId;
+        const poll = setInterval(async () => {
+          try {
+            const jobRes = await axios.get(`/api/jobs/${jobId}`);
+            const job = jobRes.data.data;
+            if (job) {
+              setBackfillProgress(job.progress || 5);
+              setBackfillMessage(job.message || 'Processing...');
+              if (job.status === 'COMPLETED') {
+                clearInterval(poll);
+                setIsBackfilling(false);
+                setSuccess('Attendance backfilled successfully!');
+                setBackfillProgress(100);
+                setTimeout(() => setBackfillProgress(0), 4000);
+                fetchAttendanceList();
+              } else if (job.status === 'FAILED') {
+                clearInterval(poll);
+                setIsBackfilling(false);
+                setError('Backfill failed: ' + job.error);
+                setBackfillProgress(0);
+              }
+            }
+          } catch (e) {
+            // ignore
+          }
+        }, 2000);
+      }
+    } catch (err) {
+      setIsBackfilling(false);
+      setError('Failed to trigger backfill: ' + (err.response?.data?.message || err.message));
+    }
+  };
+
+  const handleInvalidateCache = async () => {
+    setError('');
+    setSuccess('');
+    try {
+      await axios.post('/api/jobs/cache/invalidate');
+      setSuccess('Analytics cache cleared successfully.');
+      fetchSystemHealth();
+    } catch (e) {
+      setError('Failed to clear cache.');
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'sync' || activeTab === 'health') {
+      fetchSystemHealth();
+      fetchJobs();
+      const interval = setInterval(() => {
+        fetchSystemHealth();
+        fetchJobs();
+      }, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [activeTab]);
 
   // Fetch contests list, departments, and batches on mount
   useEffect(() => {
@@ -223,6 +339,42 @@ function Attendance() {
 
   return (
     <div className="space-y-6">
+      {/* Tab Navigation */}
+      <div className="flex flex-wrap gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
+        <button
+          onClick={() => setActiveTab('sheet')}
+          className={`px-4 py-2 text-sm font-semibold transition-all rounded-xl ${
+            activeTab === 'sheet'
+              ? 'bg-primary-600 text-white shadow-md shadow-primary-600/20'
+              : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+          }`}
+        >
+          Attendance Sheets
+        </button>
+        <button
+          onClick={() => setActiveTab('sync')}
+          className={`px-4 py-2 text-sm font-semibold transition-all rounded-xl ${
+            activeTab === 'sync'
+              ? 'bg-primary-600 text-white shadow-md shadow-primary-600/20'
+              : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+          }`}
+        >
+          Sync Control Dashboard
+        </button>
+        <button
+          onClick={() => setActiveTab('health')}
+          className={`px-4 py-2 text-sm font-semibold transition-all rounded-xl ${
+            activeTab === 'health'
+              ? 'bg-primary-600 text-white shadow-md shadow-primary-600/20'
+              : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+          }`}
+        >
+          System Health & Metrics
+        </button>
+      </div>
+
+      {activeTab === 'sheet' && (
+        <>
       {/* Header with Contest and Batch Filter Dropdowns */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
@@ -714,6 +866,198 @@ function Attendance() {
         </div>
 
       </div>
+        </>
+      )}
+
+      {activeTab === 'sync' && (
+        <div className="space-y-6">
+          {/* Sync Trigger Widgets */}
+          <div className="grid gap-6 md:grid-cols-3 animate-fade-in">
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm">
+              <h3 className="text-sm font-bold text-slate-800 dark:text-white">Platform Synchronization</h3>
+              <p className="text-xs text-slate-400 mt-1">Triggers a background job to fetch latest profile ratings and contest logs from LeetCode, CodeChef, Codeforces, and HackerRank.</p>
+              <button
+                onClick={handleTriggerSync}
+                className="mt-4 w-full rounded-xl bg-primary-600 hover:bg-primary-500 py-2.5 text-xs font-bold text-white shadow-sm transition-all"
+              >
+                Sync Platform Data
+              </button>
+            </div>
+            
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm">
+              <h3 className="text-sm font-bold text-slate-800 dark:text-white">Attendance Backfill</h3>
+              <p className="text-xs text-slate-400 mt-1">Scans existing platform contest history logs to dynamically backfill and correct missed or unrecorded student attendance.</p>
+              <button
+                onClick={handleTriggerBackfill}
+                disabled={isBackfilling}
+                className="mt-4 w-full rounded-xl bg-violet-600 hover:bg-violet-500 py-2.5 text-xs font-bold text-white shadow-sm transition-all disabled:opacity-50"
+              >
+                {isBackfilling ? `Backfilling (${backfillProgress}%)` : 'Run Attendance Backfill'}
+              </button>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm">
+              <h3 className="text-sm font-bold text-slate-800 dark:text-white">Cache & Optimization</h3>
+              <p className="text-xs text-slate-400 mt-1">Clears the Analytics Cache Layer immediately. The next dashboard or report load will pull fresh database computations.</p>
+              <button
+                onClick={handleInvalidateCache}
+                className="mt-4 w-full rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 py-2.5 text-xs font-bold text-slate-600 dark:text-slate-300 transition-all"
+              >
+                Clear Analytics Cache
+              </button>
+            </div>
+          </div>
+
+          {isBackfilling && (
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm space-y-2 animate-fade-in">
+              <div className="flex justify-between text-xs font-semibold text-slate-500">
+                <span>{backfillMessage}</span>
+                <span>{backfillProgress}%</span>
+              </div>
+              <div className="h-2 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                <div className="h-full bg-primary-600 transition-all duration-300" style={{ width: `${backfillProgress}%` }} />
+              </div>
+            </div>
+          )}
+
+          {/* Job Queue Status Table */}
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden animate-fade-in">
+            <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
+              <div>
+                <h3 className="text-sm font-bold text-slate-800 dark:text-white">Recent Background Jobs</h3>
+                <p className="text-xs text-slate-400">View progress, execution duration, and retries of background enqueued tasks.</p>
+              </div>
+              <button onClick={fetchJobs} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400">
+                <RefreshCw className={`h-4.5 w-4.5 ${loadingJobs ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-slate-500">
+                <thead className="bg-slate-50 dark:bg-slate-800 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  <tr>
+                    <th className="px-5 py-3">Job ID / Type</th>
+                    <th className="px-5 py-3">Status</th>
+                    <th className="px-5 py-3">Progress</th>
+                    <th className="px-5 py-3">Created / Completed</th>
+                    <th className="px-5 py-3 text-right">Retries</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {jobs.length === 0 ? (
+                    <tr>
+                      <td colSpan="5" className="px-5 py-8 text-center text-slate-400 font-semibold">No recent jobs enqueued.</td>
+                    </tr>
+                  ) : (
+                    jobs.map(j => (
+                      <tr key={j.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                        <td className="px-5 py-4 font-semibold text-slate-700 dark:text-slate-300">
+                          <div>#{j.id} - <span className="uppercase text-[10px] tracking-wide text-primary-500">{j.type}</span></div>
+                          <div className="text-[10px] text-slate-400 font-medium mt-0.5">{j.message}</div>
+                          {j.error && <div className="text-[10px] text-rose-500 font-medium mt-0.5">{j.error}</div>}
+                        </td>
+                        <td className="px-5 py-4">
+                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                            j.status === 'COMPLETED' ? 'bg-emerald-100 dark:bg-emerald-950/40 text-emerald-600' :
+                            j.status === 'FAILED' ? 'bg-rose-100 dark:bg-rose-950/40 text-rose-600' :
+                            j.status === 'RUNNING' ? 'bg-amber-100 dark:bg-amber-950/40 text-amber-600 animate-pulse' :
+                            'bg-slate-100 dark:bg-slate-800 text-slate-500'
+                          }`}>
+                            {j.status}
+                          </span>
+                        </td>
+                        <td className="px-5 py-4">
+                          <div className="flex items-center gap-2 max-w-[120px]">
+                            <div className="h-1.5 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                              <div className="h-full bg-primary-600 transition-all duration-300" style={{ width: `${j.progress}%` }} />
+                            </div>
+                            <span className="font-semibold text-slate-600 dark:text-slate-300">{j.progress}%</span>
+                          </div>
+                        </td>
+                        <td className="px-5 py-4 text-slate-400">
+                          <div>S: {new Date(j.createdAt).toLocaleTimeString()}</div>
+                          {j.completedAt && <div>E: {new Date(j.completedAt).toLocaleTimeString()}</div>}
+                        </td>
+                        <td className="px-5 py-4 text-right font-semibold text-slate-600 dark:text-slate-300">
+                          {j.retryCount || 0}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'health' && systemHealth && (
+        <div className="space-y-6 animate-fade-in">
+          {/* Health Stats Grid */}
+          <div className="grid gap-6 md:grid-cols-4">
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm">
+              <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">System Uptime</h4>
+              <p className="text-2xl font-extrabold text-slate-850 dark:text-white mt-1">{(systemHealth.uptime / 3600).toFixed(1)} hrs</p>
+              <div className="text-[10px] text-slate-400 mt-2 font-medium">Uptime duration of Node backend.</div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm">
+              <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">CPU Usage</h4>
+              <p className="text-2xl font-extrabold text-slate-850 dark:text-white mt-1">{systemHealth.cpu?.usagePercent || '0.00'}%</p>
+              <div className="text-[10px] text-slate-400 mt-2 font-medium">Average CPU load of process.</div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm">
+              <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Memory RSS</h4>
+              <p className="text-2xl font-extrabold text-slate-850 dark:text-white mt-1">{systemHealth.memory?.rss || 'N/A'}</p>
+              <div className="text-[10px] text-slate-400 mt-2 font-medium">Heap Used: {systemHealth.memory?.heapUsed || 'N/A'}.</div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm">
+              <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Cache Hit Rate</h4>
+              <p className="text-2xl font-extrabold text-slate-850 dark:text-white mt-1">{systemHealth.cache?.hitRate || '0'}%</p>
+              <div className="text-[10px] text-slate-400 mt-2 font-medium">Hits: {systemHealth.cache?.hits || 0} / Misses: {systemHealth.cache?.misses || 0}.</div>
+            </div>
+          </div>
+
+          <div className="grid gap-6 md:grid-cols-2">
+            {/* Database & Latency */}
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm space-y-4">
+              <h3 className="text-sm font-bold text-slate-800 dark:text-white">Database Performance</h3>
+              <div className="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-2 text-xs">
+                <span className="text-slate-400">Database Connection</span>
+                <span className={`font-bold ${systemHealth.database?.healthy ? 'text-emerald-500' : 'text-rose-500'}`}>
+                  {systemHealth.database?.healthy ? 'HEALTHY' : 'UNHEALTHY'}
+                </span>
+              </div>
+              <div className="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-2 text-xs">
+                <span className="text-slate-400">Query Latency</span>
+                <span className="font-bold text-slate-700 dark:text-slate-300">{systemHealth.database?.queryLatencyMs || 0} ms</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">DB Reconnects / Retries</span>
+                <span className="font-bold text-slate-700 dark:text-slate-300">{systemHealth.database?.retryCount || 0}</span>
+              </div>
+            </div>
+
+            {/* Platform API Latencies */}
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm space-y-4">
+              <h3 className="text-sm font-bold text-slate-800 dark:text-white">Platform API Health & Latency</h3>
+              {Object.entries(systemHealth.platforms || {}).map(([platform, data]) => (
+                <div key={platform} className="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-2 text-xs last:border-0 last:pb-0">
+                  <span className="text-slate-400 uppercase font-semibold">{platform}</span>
+                  <div className="flex items-center gap-4">
+                    <span className={`font-bold ${data.status === 'healthy' ? 'text-emerald-500' : 'text-rose-500'}`}>
+                      {data.status.toUpperCase()}
+                    </span>
+                    <span className="text-slate-500 font-semibold">{data.avg_latency_ms || 0} ms</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Manual Adjustment Remarks Modal */}
       {showOverrideModal && (

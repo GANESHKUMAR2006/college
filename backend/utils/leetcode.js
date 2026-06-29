@@ -279,10 +279,27 @@ async function getUserLeetCodeStats(username) {
           acSubmissionNum {
             difficulty
             count
+            submissions
+          }
+          totalSubmissionNum {
+            difficulty
+            count
+            submissions
           }
         }
         userCalendar {
           totalActiveDays
+          submissionCalendar
+        }
+        badges {
+          id
+          name
+          icon
+          hoverText
+          medal {
+            slug
+          }
+          creationDate
         }
       }
       userContestRanking(username: $username) {
@@ -299,11 +316,33 @@ async function getUserLeetCodeStats(username) {
       const submitStats = json.data.matchedUser.submitStats?.acSubmissionNum || [];
       const userCalendar = json.data.matchedUser.userCalendar || {};
       const contestRanking = json.data.userContestRanking || {};
+      const rawBadges = json.data.matchedUser.badges || [];
 
       const solvedStats = {};
       submitStats.forEach(item => {
         solvedStats[item.difficulty] = item.count;
       });
+
+      let parsedCalendar = {};
+      if (userCalendar.submissionCalendar) {
+        try {
+          parsedCalendar = JSON.parse(userCalendar.submissionCalendar);
+        } catch (e) {
+          console.warn('[LeetCode Stats] Failed to parse submissionCalendar JSON:', e.message);
+        }
+      }
+
+      const acAll = (json.data.matchedUser.submitStats?.acSubmissionNum || []).find(x => x.difficulty === 'All')?.submissions || 0;
+      const totalAll = (json.data.matchedUser.submitStats?.totalSubmissionNum || []).find(x => x.difficulty === 'All')?.submissions || 0;
+      const acceptanceRate = totalAll > 0 ? Number(((acAll / totalAll) * 100).toFixed(2)) : 0.0;
+
+      const badgesList = rawBadges.map(b => ({
+        id: b.id,
+        name: b.name,
+        icon: b.icon ? (b.icon.startsWith('/') ? 'https://leetcode.com' + b.icon : b.icon) : null,
+        hoverText: b.hoverText,
+        slug: b.medal?.slug || ''
+      }));
 
       return {
         success: true,
@@ -313,9 +352,12 @@ async function getUserLeetCodeStats(username) {
         mediumSolved: solvedStats['Medium'] || 0,
         hardSolved: solvedStats['Hard'] || 0,
         activeDays: userCalendar.totalActiveDays || 0,
+        submissionCalendar: parsedCalendar,
         contestRating: contestRanking.rating ? Math.round(contestRanking.rating) : null,
         globalRanking: contestRanking.globalRanking || null,
-        contestParticipationCount: contestRanking.attendedContestsCount || 0
+        contestParticipationCount: contestRanking.attendedContestsCount || 0,
+        badges: badgesList,
+        acceptanceRate: acceptanceRate
       };
     } else {
       return { success: false, error: 'User not found on LeetCode' };

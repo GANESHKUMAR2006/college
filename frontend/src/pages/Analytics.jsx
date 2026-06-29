@@ -35,6 +35,8 @@ function Analytics() {
   const [filterDept, setFilterDept] = useState('');
   const [filterSec, setFilterSec] = useState('');
   const [filterBatch, setFilterBatch] = useState('');
+  const [searchText, setSearchText] = useState('');
+  const [sortBy, setSortBy] = useState('overall');
   const [availableDepts, setAvailableDepts] = useState([]);
   const [availableSections, setAvailableSections] = useState([]);
   const [availableBatches, setAvailableBatches] = useState([]);
@@ -131,7 +133,31 @@ function Analytics() {
     );
   }
 
-  const { topPerformers, topImprovers, mostConsistent } = leaderboardData;
+  const { topPerformers, topImprovers, mostConsistent, coverageSummary } = leaderboardData;
+
+  const filteredTopPerformers = [...(topPerformers || [])]
+    .filter((student) => {
+      const value = searchText.toLowerCase();
+      return !value || [student.name, student.register_number, student.leetcode_username, student.codechef_username, student.codeforces_username, student.hackerrank_username]
+        .filter(Boolean)
+        .some((text) => String(text).toLowerCase().includes(value));
+    })
+    .sort((a, b) => {
+      if (sortBy === 'rating') return Number(b.current_rating || 0) - Number(a.current_rating || 0);
+      if (sortBy === 'problems') return Number(b.problems_solved || 0) - Number(a.problems_solved || 0);
+      if (sortBy === 'attendance') return Number(b.contests_attended || 0) - Number(a.contests_attended || 0);
+      return Number(b.overall_score || 0) - Number(a.overall_score || 0);
+    });
+
+  const formatPlatformLabel = (platform) => {
+    switch (platform) {
+      case 'leetcode': return 'LeetCode';
+      case 'codechef': return 'CodeChef';
+      case 'codeforces': return 'Codeforces';
+      case 'hackerrank': return 'HackerRank';
+      default: return platform;
+    }
+  };
 
   // Chart Cell Colors for Departments
   const COLORS = ['#4f73ff', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6'];
@@ -171,7 +197,28 @@ function Analytics() {
       {activeTab === 'leaderboard' ? (
         <div className="space-y-6">
           {/* Filters Bar */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 rounded-2xl border border-slate-200/60 dark:border-slate-800/80 bg-white dark:bg-slate-900 p-4 shadow-sm">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 rounded-2xl border border-slate-200/60 dark:border-slate-800/80 bg-white dark:bg-slate-900 p-4 shadow-sm">
+            {/* Search */}
+            <input
+              type="text"
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              placeholder="Search by name or handle"
+              className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/40 px-3 py-2.5 text-xs outline-none focus:border-primary-500 dark:text-slate-200"
+            />
+
+            {/* Sort */}
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/40 px-3 py-2.5 text-xs outline-none focus:border-primary-500 dark:text-slate-200"
+            >
+              <option value="overall">Sort by overall score</option>
+              <option value="rating">Sort by current rating</option>
+              <option value="problems">Sort by problems solved</option>
+              <option value="attendance">Sort by contests attended</option>
+            </select>
+
             {/* Dept filter */}
             <select
               value={filterDept}
@@ -210,13 +257,30 @@ function Analytics() {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-3 rounded-2xl border border-slate-200/60 dark:border-slate-800/80 bg-gradient-to-br from-primary-50/80 to-white dark:from-primary-950/30 dark:to-slate-900 p-4 shadow-sm">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-slate-800 dark:text-white">Unified competitive programming overview</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Students are ranked by contest performance while also showing their connected platforms.</p>
+                </div>
+                <div className="flex flex-wrap gap-2 text-xs">
+                  <span className="rounded-full border border-primary-200 bg-white/80 px-3 py-1 font-semibold text-primary-700 dark:border-primary-900/50 dark:bg-slate-900/70 dark:text-primary-400">
+                    {coverageSummary?.multiPlatformProfiles || 0} multi-platform profiles
+                  </span>
+                  <span className="rounded-full border border-slate-200 bg-white/80 px-3 py-1 font-semibold text-slate-600 dark:border-slate-800 dark:bg-slate-900/70 dark:text-slate-300">
+                    Avg. {coverageSummary?.averagePlatformCount || '0.0'} platforms per student
+                  </span>
+                </div>
+              </div>
+            </div>
+
           {/* Top Performers Leaderboard */}
           <div className="lg:col-span-2 rounded-2xl border border-slate-200/60 dark:border-slate-800/80 bg-white dark:bg-slate-900 p-5 shadow-sm space-y-4">
             <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
               <Trophy className="h-5 w-5 text-amber-500" />
               <div>
                 <h3 className="font-bold text-slate-800 dark:text-white">Top Performers Leaderboard</h3>
-                <p className="text-xs text-slate-400">Ranked by current LeetCode contest rating.</p>
+                <p className="text-xs text-slate-400">Ranked by contest strength and platform coverage.</p>
               </div>
             </div>
 
@@ -233,19 +297,28 @@ function Analytics() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/40">
-                  {topPerformers.length === 0 ? (
+                  {filteredTopPerformers.length === 0 ? (
                     <tr>
                       <td colSpan="6" className="text-center py-8 text-slate-400">No participation records yet. Sync data to begin.</td>
                     </tr>
                   ) : (
-                    topPerformers.map((p, idx) => (
+                    filteredTopPerformers.map((p, idx) => (
                       <tr key={p.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/20">
                         <td className="py-3 font-extrabold text-slate-400">
                           {idx === 0 ? '🏆 1' : idx === 1 ? '🥈 2' : idx === 2 ? '🥉 3' : idx + 1}
                         </td>
                         <td>
                           <span className="font-bold text-slate-800 dark:text-slate-200 block">{p.name}</span>
-                          <span className="text-[10px] text-slate-400 uppercase tracking-wide">{p.register_number} • {p.leetcode_username}</span>
+                          <span className="text-[10px] text-slate-400 uppercase tracking-wide">{p.register_number} • {p.leetcode_username || 'No LeetCode handle'}</span>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {p.platforms?.length ? p.platforms.map((platform) => (
+                              <span key={`${p.id}-${platform.platform}`} className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                                {formatPlatformLabel(platform.platform)}
+                              </span>
+                            )) : (
+                              <span className="text-[10px] text-slate-400">LeetCode-only profile</span>
+                            )}
+                          </div>
                         </td>
                         <td className="text-slate-500">{p.department}</td>
                         <td className="text-center font-semibold text-slate-600 dark:text-slate-300">{p.contests_attended}</td>
@@ -331,7 +404,7 @@ function Analytics() {
             {/* Average Ratings Chart */}
             <div className="rounded-2xl border border-slate-200/60 dark:border-slate-800/80 bg-white dark:bg-slate-900 p-5 shadow-sm">
               <h3 className="font-bold text-slate-800 dark:text-white mb-4 flex items-center gap-1.5">
-                <Building2 className="h-4.5 w-4.5 text-primary-500" /> Average LeetCode Rating by Department
+                <Building2 className="h-4.5 w-4.5 text-primary-500" /> Average Competitive Programming Rating by Department
               </h3>
               <div className="h-72">
                 <ResponsiveContainer width="100%" height="100%">

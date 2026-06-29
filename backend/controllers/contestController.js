@@ -1,4 +1,7 @@
 const db = require('../config/db');
+const jobQueue = require('../services/jobQueueService');
+const cache = require('../services/analyticsCacheService');
+const auditLog = require('../services/auditLogService');
 
 // Helper to determine contest status dynamically
 function getContestStatus(slug) {
@@ -106,7 +109,7 @@ async function getContests(req, res) {
 
 // 2. Add contest
 async function addContest(req, res) {
-  const { contestId, name, date, type } = req.body;
+  const { contestId, name, date, type, platform } = req.body;
   if (!contestId || !name || !date) {
     return res.status(400).json({ success: false, message: 'Contest ID (slug), Name, and Date are required.' });
   }
@@ -119,10 +122,21 @@ async function addContest(req, res) {
     const contestNumber = match ? parseInt(match[1], 10) : 0;
     const dbContestStatus = getContestStatus(slug) === 'UNRATED' ? 'Unrated' : 'Rated';
 
+    // Auto-detect platform if not provided
+    let dbPlatform = platform || 'LeetCode';
+    if (!platform) {
+      const cleanId = contestId.toLowerCase();
+      if (cleanId.includes('codechef') || cleanId.includes('starters') || cleanId.includes('lunchtime') || cleanId.includes('cook-off')) {
+        dbPlatform = 'CodeChef';
+      } else if (cleanId.includes('codeforces') || cleanId.includes('educational') || cleanId.includes('global')) {
+        dbPlatform = 'Codeforces';
+      }
+    }
+
     await db.query(
-      `INSERT INTO Contests (title, slug, contest_type, contest_number, start_time, contest_status)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [name, slug, contestType, contestNumber, date, dbContestStatus]
+      `INSERT INTO Contests (title, slug, contest_type, contest_number, start_time, contest_status, platform)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [name, slug, contestType, contestNumber, date, dbContestStatus, dbPlatform]
     );
 
     return res.json({ success: true, message: 'Contest added successfully.' });
@@ -135,7 +149,7 @@ async function addContest(req, res) {
 // 3. Edit contest
 async function editContest(req, res) {
   const { id } = req.params;
-  const { contestId, name, date, type } = req.body;
+  const { contestId, name, date, type, platform } = req.body;
   if (!contestId || !name || !date) {
     return res.status(400).json({ success: false, message: 'Contest ID (slug), Name, and Date are required.' });
   }
@@ -154,11 +168,22 @@ async function editContest(req, res) {
     }
     const realId = contest[0].contest_id;
 
+    // Auto-detect platform if not provided
+    let dbPlatform = platform || 'LeetCode';
+    if (!platform) {
+      const cleanId = contestId.toLowerCase();
+      if (cleanId.includes('codechef') || cleanId.includes('starters') || cleanId.includes('lunchtime') || cleanId.includes('cook-off')) {
+        dbPlatform = 'CodeChef';
+      } else if (cleanId.includes('codeforces') || cleanId.includes('educational') || cleanId.includes('global')) {
+        dbPlatform = 'Codeforces';
+      }
+    }
+
     await db.query(
       `UPDATE Contests 
-       SET title = ?, slug = ?, contest_type = ?, contest_number = ?, start_time = ?, contest_status = ?
+       SET title = ?, slug = ?, contest_type = ?, contest_number = ?, start_time = ?, contest_status = ?, platform = ?
        WHERE contest_id = ?`,
-      [name, slug, contestType, contestNumber, date, dbContestStatus, realId]
+      [name, slug, contestType, contestNumber, date, dbContestStatus, dbPlatform, realId]
     );
 
     return res.json({ success: true, message: 'Contest updated successfully.' });
@@ -187,15 +212,29 @@ async function deleteContest(req, res) {
   }
 }
 
-// 5. Trigger manual sync
+// 5. Trigger manual sync — enqueues a background job, returns immediately
 async function triggerSync(req, res) {
-  const { syncAllData } = require('../utils/scheduler');
   try {
-    const result = await syncAllData();
-    return res.json({ success: true, ...result });
+    const { syncAllData } = require('../utils/scheduler');
+    const jobId = jobQueue.enqueue(
+      jobQueue.JOB_TYPE.PLATFORM_SYNC,
+      { triggeredBy: 'manual', timestamp: new Date().toISOString() },
+      async (job, updateProgress) => {
+        updateProgress(5, 'Starting platform synchronization...');
+        const result = await syncAllData();
+        updateProgress(95, 'Invalidating analytics cache...');
+        cache.invalidateAll();
+        updateProgress(100, 'Sync completed');
+        return result;
+      }
+    );
+    await auditLog.log(auditLog.AUDIT_ACTIONS.SYNC_STARTED, {
+      details: { jobId, trigger: 'manual' }
+    });
+    return res.json({ success: true, message: 'Sync job started in background', jobId });
   } catch (error) {
     console.error('Manual sync error:', error);
-    return res.status(500).json({ success: false, message: 'Synchronization failed: ' + error.message });
+    return res.status(500).json({ success: false, message: 'Failed to start sync: ' + error.message });
   }
 }
 

@@ -1,5 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import { 
   LayoutDashboard, 
   Users, 
@@ -10,21 +11,36 @@ import {
   TrendingUp,
   Sparkles,
   FileText,
-  Building2
+  Building2,
+  Bell,
+  Activity,
+  Briefcase,
+  Brain,
+  ShieldCheck
 } from 'lucide-react';
 
 function Sidebar({ isOpen, toggleSidebar }) {
+  const { user } = useAuth();
+
   const links = [
     { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { to: '/live-monitor', label: 'Live Contest Monitor', icon: Activity },
     { to: '/students', label: 'Student Directory', icon: Users },
     { to: '/contests', label: 'Contest Master', icon: Award },
     { to: '/attendance', label: 'Sync & Attendance', icon: CloudUpload },
+    { to: '/notifications', label: 'Actionable Alerts', icon: Bell },
     { to: '/profile', label: 'Contest Participation Timeline', icon: TrendingUp },
     { to: '/analytics', label: 'Performance Analytics', icon: BarChart3 },
+    { to: '/placement', label: 'Placement Prep', icon: Briefcase },
+    { to: '/ai-insights', label: 'AI Coach & Insights', icon: Brain },
     { to: '/reports', label: 'Reports & Summary', icon: FileText },
     { to: '/archive', label: 'Graduation Archive', icon: Archive },
     { to: '/departments', label: 'Department Manager', icon: Building2 },
   ];
+
+  if (user?.role === 'Super Admin') {
+    links.push({ to: '/admin/data-health', label: 'Data Diagnostics', icon: ShieldCheck });
+  }
 
   const activeClass = "flex items-center px-4 py-3 text-sm font-semibold text-white bg-primary-600 rounded-xl transition-all shadow-md shadow-primary-600/20";
   const inactiveClass = "flex items-center px-4 py-3 text-sm font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-all";

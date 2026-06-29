@@ -1,18 +1,26 @@
-const db = require('../config/db');
+/**
+ * notificationController.js (UPDATED)
+ * =====================================
+ * Delegates to NotificationService. Supports severity filter, search, archive.
+ */
+
+const notificationService = require('../services/notificationService');
 
 async function getNotifications(req, res) {
+  const { severity, type, search, limit, unreadOnly, archived } = req.query;
   try {
-    const alerts = await db.query(
-      `SELECT n.*, u.name as student_name, u.roll_no as student_roll, c.title as contest_name
-       FROM notifications n
-       LEFT JOIN Users u ON n.student_id = u.id
-       LEFT JOIN Contests c ON n.contest_id = c.contest_id
-       ORDER BY n.is_read ASC, n.created_at DESC
-       LIMIT 50`
-    );
-    return res.json({ success: true, data: alerts });
+    const alerts = await notificationService.getNotifications({
+      severity,
+      type,
+      search,
+      limit: limit ? Number(limit) : 50,
+      unreadOnly: unreadOnly === 'true',
+      archived: archived === 'true'
+    });
+    const unreadCount = await notificationService.getUnreadCount();
+    return res.json({ success: true, data: alerts, unreadCount });
   } catch (error) {
-    console.error('Error fetching notifications:', error);
+    console.error('[NotificationController] Error fetching notifications:', error);
     return res.status(500).json({ success: false, message: 'Failed to retrieve notifications' });
   }
 }
@@ -20,26 +28,48 @@ async function getNotifications(req, res) {
 async function markAsRead(req, res) {
   const { id } = req.params;
   try {
-    await db.query('UPDATE notifications SET is_read = TRUE WHERE id = ?', [id]);
+    await notificationService.markRead(Number(id));
     return res.json({ success: true, message: 'Notification marked as read' });
   } catch (error) {
-    console.error('Error marking notification as read:', error);
+    console.error('[NotificationController] Error marking notification as read:', error);
     return res.status(500).json({ success: false, message: 'Failed to update notification' });
   }
 }
 
 async function markAllAsRead(req, res) {
   try {
-    await db.query('UPDATE notifications SET is_read = TRUE');
+    await notificationService.markAllRead();
     return res.json({ success: true, message: 'All notifications marked as read' });
   } catch (error) {
-    console.error('Error marking all notifications as read:', error);
+    console.error('[NotificationController] Error marking all as read:', error);
     return res.status(500).json({ success: false, message: 'Failed to update notifications' });
+  }
+}
+
+async function archiveNotification(req, res) {
+  const { id } = req.params;
+  try {
+    await notificationService.archive(Number(id));
+    return res.json({ success: true, message: 'Notification archived' });
+  } catch (error) {
+    console.error('[NotificationController] Error archiving notification:', error);
+    return res.status(500).json({ success: false, message: 'Failed to archive notification' });
+  }
+}
+
+async function getUnreadCount(req, res) {
+  try {
+    const count = await notificationService.getUnreadCount();
+    return res.json({ success: true, unreadCount: count });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to get unread count' });
   }
 }
 
 module.exports = {
   getNotifications,
   markAsRead,
-  markAllAsRead
+  markAllAsRead,
+  archiveNotification,
+  getUnreadCount
 };

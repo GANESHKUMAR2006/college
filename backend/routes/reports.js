@@ -9,5 +9,6 @@ router.get('/departments', reportController.getDepartmentReport);
 router.get('/sections', reportController.getSectionReport);
 router.get('/heatmap', reportController.getAttendanceHeatmap);
 router.get('/attendance-log', reportController.getAttendanceLog);
+router.get('/faculty-summary', reportController.getFacultySummary);
 
 module.exports = router;

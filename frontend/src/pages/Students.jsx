@@ -44,6 +44,9 @@ function Students() {
     section: '',
     academicBatch: '',
     leetcodeUsername: '',
+    codechefUsername: '',
+    codeforcesUsername: '',
+    hackerrankUsername: '',
     academicStartDate: '',
     academicEndDate: ''
   });
@@ -55,6 +58,11 @@ function Students() {
   const [lcVerified, setLcVerified] = useState(null); // null, true, false
   const [lcCheckedUsername, setLcCheckedUsername] = useState('');
   const [lcStats, setLcStats] = useState({ rating: null, globalRanking: null });
+  const [platformChecks, setPlatformChecks] = useState({
+    codechef: { checking: false, verified: null, username: '', stats: {} },
+    codeforces: { checking: false, verified: null, username: '', stats: {} },
+    hackerrank: { checking: false, verified: null, username: '', stats: {} }
+  });
 
   // Import states
   const [importFile, setImportFile] = useState(null);
@@ -144,7 +152,50 @@ function Students() {
     const { name, value } = e.target;
     setFormData({ ...formData, [name]: value });
     if (name === 'leetcodeUsername') {
-      setLcVerified(null); // reset verification if handle changes
+      setLcVerified(null);
+    }
+    if (name === 'codechefUsername') {
+      setPlatformChecks(prev => ({ ...prev, codechef: { ...prev.codechef, verified: null, username: '', stats: {} } }));
+    }
+    if (name === 'codeforcesUsername') {
+      setPlatformChecks(prev => ({ ...prev, codeforces: { ...prev.codeforces, verified: null, username: '', stats: {} } }));
+    }
+    if (name === 'hackerrankUsername') {
+      setPlatformChecks(prev => ({ ...prev, hackerrank: { ...prev.hackerrank, verified: null, username: '', stats: {} } }));
+    }
+  };
+
+  const handleVerifyPlatform = async (platform) => {
+    const key = `${platform}Username`;
+    const username = formData[key]?.trim();
+    if (!username) return;
+
+    setPlatformChecks(prev => ({
+      ...prev,
+      [platform]: { ...prev[platform], checking: true, verified: null, username: '', stats: {} }
+    }));
+
+    try {
+      const res = await axios.get(`/api/students/verify-platform/${platform}/${encodeURIComponent(username)}`);
+      const verified = Boolean(res.data.exists);
+      setPlatformChecks(prev => ({
+        ...prev,
+        [platform]: {
+          ...prev[platform],
+          checking: false,
+          verified,
+          username: res.data.username || username,
+          stats: { rating: res.data.rating, globalRanking: res.data.globalRanking }
+        }
+      }));
+      if (verified) {
+        setFormData(prev => ({ ...prev, [key]: res.data.username || username }));
+      }
+    } catch (err) {
+      setPlatformChecks(prev => ({
+        ...prev,
+        [platform]: { ...prev[platform], checking: false, verified: false, username: '', stats: {} }
+      }));
     }
   };
 
@@ -186,6 +237,9 @@ function Students() {
       section: '',
       academicBatch: '',
       leetcodeUsername: '',
+      codechefUsername: '',
+      codeforcesUsername: '',
+      hackerrankUsername: '',
       academicStartDate: '',
       academicEndDate: ''
     });
@@ -203,7 +257,10 @@ function Students() {
       department: student.department,
       section: student.section,
       academicBatch: student.academic_batch,
-      leetcodeUsername: student.leetcode_username,
+      leetcodeUsername: student.leetcode_username || '',
+      codechefUsername: student.codechef_username || '',
+      codeforcesUsername: student.codeforces_username || '',
+      hackerrankUsername: student.hackerrank_username || '',
       academicStartDate: student.academic_start_date ? student.academic_start_date.split('T')[0] : '',
       academicEndDate: student.academic_end_date ? student.academic_end_date.split('T')[0] : ''
     });
@@ -220,7 +277,7 @@ function Students() {
     setFormError('');
 
     if (lcVerified !== true) {
-      setFormError('Please verify LeetCode username before saving.');
+      setFormError('Please verify the LeetCode username before saving.');
       return;
     }
 
@@ -247,7 +304,7 @@ function Students() {
     setFormError('');
 
     if (lcVerified !== true) {
-      setFormError('Please verify LeetCode username before saving.');
+      setFormError('Please verify the LeetCode username before saving.');
       return;
     }
 
@@ -482,10 +539,10 @@ function Students() {
 
       {/* Add / Edit Student Modal */}
       {(isAddModalOpen || isEditModalOpen) && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm px-4">
-          <div className="relative w-full max-w-lg rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-2xl animate-fade-in">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm px-4 py-4">
+          <div className="relative flex w-full max-w-lg max-h-[90vh] flex-col overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xl animate-fade-in">
             {/* Modal Title */}
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 mb-5">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 px-6 py-4">
               <h3 className="text-lg font-bold text-slate-800 dark:text-white">
                 {isAddModalOpen ? 'Add Student Profile' : 'Edit Student Profile'}
               </h3>
@@ -498,181 +555,238 @@ function Students() {
             </div>
 
             {/* Modal Form */}
-            <form onSubmit={isAddModalOpen ? handleAddStudent : handleEditStudent} className="space-y-4">
-              {formError && (
-                <div className="flex items-center gap-2 rounded-xl bg-rose-50 dark:bg-rose-950/25 border border-rose-100 dark:border-rose-900/30 p-3 text-xs font-semibold text-rose-600 dark:text-rose-400">
-                  <AlertCircle className="h-4 w-4 shrink-0" />
-                  <span>{formError}</span>
-                </div>
-              )}
+            <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4">
+              <form id={isAddModalOpen ? 'add-student-form' : 'edit-student-form'} onSubmit={isAddModalOpen ? handleAddStudent : handleEditStudent} className="space-y-4">
+                {formError && (
+                  <div className="flex items-center gap-2 rounded-xl bg-rose-50 dark:bg-rose-950/25 border border-rose-100 dark:border-rose-900/30 p-3 text-xs font-semibold text-rose-600 dark:text-rose-400">
+                    <AlertCircle className="h-4 w-4 shrink-0" />
+                    <span>{formError}</span>
+                  </div>
+                )}
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">Roll Number</label>
-                  <input
-                    type="text"
-                    name="rollNo"
-                    required
-                    disabled={isEditModalOpen} // lock in edit
-                    value={formData.rollNo}
-                    onChange={handleInputChange}
-                    placeholder="311520104001"
-                    className="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/40 px-3 py-2 text-sm outline-none focus:border-primary-500 dark:text-white disabled:opacity-50"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">Full Name</label>
-                  <input
-                    type="text"
-                    name="name"
-                    required
-                    value={formData.name}
-                    onChange={handleInputChange}
-                    placeholder="John Doe"
-                    className="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/40 px-3 py-2 text-sm outline-none focus:border-primary-500 dark:text-white"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-3">
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">Department</label>
-                  <select
-                    name="department"
-                    required
-                    value={formData.department}
-                    onChange={handleInputChange}
-                    className="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/40 px-3 py-2.5 text-sm outline-none focus:border-primary-500 dark:text-white"
-                  >
-                    <option value="">Select Dept</option>
-                    {availableDepts
-                      .filter(d => d.status === 'active' || d.code === formData.department)
-                      .map(dept => (
-                        <option key={dept.id} value={dept.code}>
-                          {dept.code} - {dept.name}
-                        </option>
-                      ))
-                    }
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">Section</label>
-                  <input
-                    type="text"
-                    name="section"
-                    required
-                    value={formData.section}
-                    onChange={handleInputChange}
-                    placeholder="A"
-                    className="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/40 px-3 py-2 text-sm outline-none focus:border-primary-500 dark:text-white"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">Academic Batch</label>
-                  <input
-                    type="text"
-                    name="academicBatch"
-                    required
-                    value={formData.academicBatch}
-                    onChange={handleInputChange}
-                    placeholder="2024-2028"
-                    className="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/40 px-3 py-2 text-sm outline-none focus:border-primary-500 dark:text-white"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">Academic Start Date</label>
-                  <input
-                    type="date"
-                    name="academicStartDate"
-                    required
-                    value={formData.academicStartDate}
-                    onChange={handleInputChange}
-                    className="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/40 px-3 py-2 text-sm outline-none focus:border-primary-500 dark:text-white"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">Academic End Date</label>
-                  <input
-                    type="date"
-                    name="academicEndDate"
-                    required
-                    value={formData.academicEndDate}
-                    onChange={handleInputChange}
-                    className="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/40 px-3 py-2 text-sm outline-none focus:border-primary-500 dark:text-white"
-                  />
-                </div>
-              </div>
-
-              {/* Handle verification form field */}
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">LeetCode Username</label>
-                <div className="flex gap-2">
-                  <div className="relative flex-1">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">Roll Number</label>
                     <input
                       type="text"
-                      name="leetcodeUsername"
+                      name="rollNo"
                       required
-                      value={formData.leetcodeUsername}
+                      disabled={isEditModalOpen} // lock in edit
+                      value={formData.rollNo}
                       onChange={handleInputChange}
-                      placeholder="e.g. neetcode"
-                      className={`w-full rounded-xl border bg-white dark:bg-slate-950/40 px-3 py-2 text-sm outline-none focus:border-primary-500 dark:text-white ${
-                        lcVerified === true ? 'border-emerald-500 pr-9' : lcVerified === false ? 'border-rose-500 pr-9' : 'border-slate-200 dark:border-slate-800'
-                      }`}
+                      placeholder="311520104001"
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/40 px-3 py-2 text-sm outline-none focus:border-primary-500 dark:text-white disabled:opacity-50"
                     />
-                    <div className="absolute inset-y-0 right-3 flex items-center">
-                      {lcChecking && <Loader2 className="h-4 w-4 animate-spin text-slate-400" />}
-                      {!lcChecking && lcVerified === true && <Check className="h-4 w-4 text-emerald-500 font-bold" />}
-                      {!lcChecking && lcVerified === false && <X className="h-4 w-4 text-rose-500 font-bold" />}
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">Full Name</label>
+                    <input
+                      type="text"
+                      name="name"
+                      required
+                      value={formData.name}
+                      onChange={handleInputChange}
+                      placeholder="John Doe"
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/40 px-3 py-2 text-sm outline-none focus:border-primary-500 dark:text-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">Department</label>
+                    <select
+                      name="department"
+                      required
+                      value={formData.department}
+                      onChange={handleInputChange}
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/40 px-3 py-2.5 text-sm outline-none focus:border-primary-500 dark:text-white"
+                    >
+                      <option value="">Select Dept</option>
+                      {availableDepts
+                        .filter(d => d.status === 'active' || d.code === formData.department)
+                        .map(dept => (
+                          <option key={dept.id} value={dept.code}>
+                            {dept.code} - {dept.name}
+                          </option>
+                        ))
+                      }
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">Section</label>
+                    <input
+                      type="text"
+                      name="section"
+                      required
+                      value={formData.section}
+                      onChange={handleInputChange}
+                      placeholder="A"
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/40 px-3 py-2 text-sm outline-none focus:border-primary-500 dark:text-white"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">Academic Batch</label>
+                    <input
+                      type="text"
+                      name="academicBatch"
+                      required
+                      value={formData.academicBatch}
+                      onChange={handleInputChange}
+                      placeholder="2024-2028"
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/40 px-3 py-2 text-sm outline-none focus:border-primary-500 dark:text-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">Academic Start Date</label>
+                    <input
+                      type="date"
+                      name="academicStartDate"
+                      required
+                      value={formData.academicStartDate}
+                      onChange={handleInputChange}
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/40 px-3 py-2 text-sm outline-none focus:border-primary-500 dark:text-white"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">Academic End Date</label>
+                    <input
+                      type="date"
+                      name="academicEndDate"
+                      required
+                      value={formData.academicEndDate}
+                      onChange={handleInputChange}
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/40 px-3 py-2 text-sm outline-none focus:border-primary-500 dark:text-white"
+                    />
+                  </div>
+                </div>
+
+                {/* Handle verification form field */}
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">LeetCode Username</label>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <input
+                        type="text"
+                        name="leetcodeUsername"
+                        required
+                        value={formData.leetcodeUsername}
+                        onChange={handleInputChange}
+                        placeholder="e.g. neetcode"
+                        className={`w-full rounded-xl border bg-white dark:bg-slate-950/40 px-3 py-2 text-sm outline-none focus:border-primary-500 dark:text-white ${
+                          lcVerified === true ? 'border-emerald-500 pr-9' : lcVerified === false ? 'border-rose-500 pr-9' : 'border-slate-200 dark:border-slate-800'
+                        }`}
+                      />
+                      <div className="absolute inset-y-0 right-3 flex items-center">
+                        {lcChecking && <Loader2 className="h-4 w-4 animate-spin text-slate-400" />}
+                        {!lcChecking && lcVerified === true && <Check className="h-4 w-4 text-emerald-500 font-bold" />}
+                        {!lcChecking && lcVerified === false && <X className="h-4 w-4 text-rose-500 font-bold" />}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleVerifyLeetCode}
+                      disabled={lcChecking || !formData.leetcodeUsername.trim()}
+                      className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 px-4 text-xs font-bold text-slate-700 dark:text-slate-200 transition-colors disabled:opacity-40"
+                    >
+                      Verify Handle
+                    </button>
+                  </div>
+                  {lcVerified === false && (
+                    <p className="text-[10px] text-rose-500 font-semibold mt-1">
+                      Handle does not exist on LeetCode.com. Verify spelling.
+                    </p>
+                  )}
+                  {lcVerified === true && lcCheckedUsername === formData.leetcodeUsername && (
+                    <div className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold mt-1.5 space-y-0.5 p-2.5 bg-emerald-50/40 dark:bg-emerald-950/10 border border-emerald-100/40 dark:border-emerald-900/30 rounded-xl">
+                      <p className="font-bold">✓ Profile Found: Valid Username</p>
+                      <p>Correctly capitalized: <b>{formData.leetcodeUsername}</b></p>
+                      {lcStats.rating ? (
+                        <p>Current Rating: <b>{lcStats.rating}</b> {lcStats.globalRanking && <>• Global Rank: <b>#{lcStats.globalRanking}</b></>}</p>
+                      ) : (
+                        <p>Current Rating: <i>No contest rating found (Unrated)</i></p>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-3 rounded-2xl border border-slate-200/70 dark:border-slate-800/80 bg-slate-50/70 dark:bg-slate-900/50 p-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">Additional Competitive Programming Profiles</p>
+                      <p className="text-[11px] text-slate-400">Verify CodeChef, Codeforces, and HackerRank handles independently.</p>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleVerifyLeetCode}
-                    disabled={lcChecking || !formData.leetcodeUsername.trim()}
-                    className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 px-4 text-xs font-bold text-slate-700 dark:text-slate-200 transition-colors disabled:opacity-40"
-                  >
-                    Verify Handle
-                  </button>
-                </div>
-                {lcVerified === false && (
-                  <p className="text-[10px] text-rose-500 font-semibold mt-1">
-                    Handle does not exist on LeetCode.com. Verify spelling.
-                  </p>
-                )}
-                {lcVerified === true && lcCheckedUsername === formData.leetcodeUsername && (
-                  <div className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold mt-1.5 space-y-0.5 p-2.5 bg-emerald-50/40 dark:bg-emerald-950/10 border border-emerald-100/40 dark:border-emerald-900/30 rounded-xl">
-                    <p className="font-bold">✓ Profile Found: Valid Username</p>
-                    <p>Correctly capitalized: <b>{formData.leetcodeUsername}</b></p>
-                    {lcStats.rating ? (
-                      <p>Current Rating: <b>{lcStats.rating}</b> {lcStats.globalRanking && <>• Global Rank: <b>#{lcStats.globalRanking}</b></>}</p>
-                    ) : (
-                      <p>Current Rating: <i>No contest rating found (Unrated)</i></p>
-                    )}
-                  </div>
-                )}
-              </div>
 
-              {/* Action Buttons */}
-              <div className="flex justify-end gap-2 border-t border-slate-100 dark:border-slate-800 pt-4 mt-6">
-                <button
-                  type="button"
-                  onClick={() => { setIsAddModalOpen(false); setIsEditModalOpen(false); }}
-                  className="rounded-xl border border-slate-200 dark:border-slate-800 px-4 py-2.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={formLoading || lcVerified !== true}
-                  className="rounded-xl bg-primary-600 hover:bg-primary-500 disabled:opacity-50 text-white px-5 py-2.5 text-xs font-semibold shadow-md shadow-primary-500/10 flex items-center gap-1.5"
-                >
-                  {formLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save Student'}
-                </button>
-              </div>
-            </form>
+                  {['codechef', 'codeforces', 'hackerrank'].map((platform) => {
+                    const fieldName = `${platform === 'codechef' ? 'codechef' : platform === 'codeforces' ? 'codeforces' : 'hackerrank'}Username`;
+                    const label = platform === 'codechef' ? 'CodeChef Username' : platform === 'codeforces' ? 'Codeforces Username' : 'HackerRank Username';
+                    const checkState = platformChecks[platform];
+                    const inputName = fieldName;
+                    return (
+                      <div key={platform} className="space-y-1">
+                        <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">{label}</label>
+                        <div className="flex gap-2">
+                          <div className="relative flex-1">
+                            <input
+                              type="text"
+                              name={inputName}
+                              value={formData[inputName]}
+                              onChange={handleInputChange}
+                              placeholder={platform === 'codechef' ? 'e.g. chef_123' : platform === 'codeforces' ? 'e.g. tourist' : 'e.g. hacker_rank'}
+                              className={`w-full rounded-xl border bg-white dark:bg-slate-950/40 px-3 py-2 text-sm outline-none focus:border-primary-500 dark:text-white ${
+                                checkState.verified === true ? 'border-emerald-500 pr-9' : checkState.verified === false ? 'border-rose-500 pr-9' : 'border-slate-200 dark:border-slate-800'
+                              }`}
+                            />
+                            <div className="absolute inset-y-0 right-3 flex items-center">
+                              {checkState.checking && <Loader2 className="h-4 w-4 animate-spin text-slate-400" />}
+                              {!checkState.checking && checkState.verified === true && <Check className="h-4 w-4 text-emerald-500 font-bold" />}
+                              {!checkState.checking && checkState.verified === false && <X className="h-4 w-4 text-rose-500 font-bold" />}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleVerifyPlatform(platform)}
+                            disabled={checkState.checking || !formData[inputName]?.trim()}
+                            className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 px-4 text-xs font-bold text-slate-700 dark:text-slate-200 transition-colors disabled:opacity-40"
+                          >
+                            Verify
+                          </button>
+                        </div>
+                        {checkState.verified === false && (
+                          <p className="text-[10px] text-rose-500 font-semibold mt-1">Handle could not be verified on {platform === 'codechef' ? 'CodeChef' : platform === 'codeforces' ? 'Codeforces' : 'HackerRank'}.</p>
+                        )}
+                        {checkState.verified === true && checkState.username && (
+                          <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold mt-1.5">✓ {label.split(' ')[0]} profile verified{checkState.stats.rating ? ` • Rating ${checkState.stats.rating}` : ''}</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </form>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="sticky bottom-0 z-10 flex justify-end gap-2 border-t border-slate-100 dark:border-slate-800 bg-white/95 px-6 py-4 backdrop-blur-sm dark:bg-slate-900/95">
+              <button
+                type="button"
+                onClick={() => { setIsAddModalOpen(false); setIsEditModalOpen(false); }}
+                className="rounded-xl border border-slate-200 dark:border-slate-800 px-4 py-2.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                form={isAddModalOpen ? 'add-student-form' : 'edit-student-form'}
+                disabled={formLoading || lcVerified !== true}
+                className="rounded-xl bg-primary-600 hover:bg-primary-500 disabled:opacity-50 text-white px-5 py-2.5 text-xs font-semibold shadow-md shadow-primary-500/10 flex items-center gap-1.5"
+              >
+                {formLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : isAddModalOpen ? 'Add Student' : 'Save Student'}
+              </button>
+            </div>
           </div>
         </div>
       )}

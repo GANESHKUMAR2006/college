@@ -178,3 +178,34 @@ CREATE TABLE IF NOT EXISTS Migration_Health (
     issues_detected INT DEFAULT 0,
     last_checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
+
+-- 8. ContestParticipants Table (Added in Migration 11)
+CREATE TABLE IF NOT EXISTS ContestParticipants (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    contest_slug VARCHAR(255) NOT NULL,
+    username VARCHAR(100) NOT NULL,
+    `rank` INT NOT NULL,
+    score DECIMAL(10,2) NOT NULL,
+    finish_time INT NOT NULL,
+    avatar VARCHAR(255) DEFAULT NULL,
+    country VARCHAR(100) DEFAULT NULL,
+    page_number INT NOT NULL,
+    synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_contest_username (contest_slug, username),
+    INDEX idx_contest_slug (contest_slug),
+    INDEX idx_username (username)
+) ENGINE=InnoDB;
+
+-- 9. ContestLeaderboardSnapshots Table (Added in Migration 11)
+CREATE TABLE IF NOT EXISTS ContestLeaderboardSnapshots (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    contest_slug VARCHAR(255) NOT NULL,
+    page_number INT NOT NULL,
+    raw_json LONGTEXT NOT NULL,
+    downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_contest_page (contest_slug, page_number),
+    INDEX idx_contest_slug (contest_slug)
+) ENGINE=InnoDB;
+

@@ -1,6 +1,8 @@
 const db = require('../config/db');
 const xlsx = require('xlsx');
 const leetcode = require('../utils/leetcode');
+const { getUserCodeChefStats } = require('../utils/codechef');
+const { normalizeBatchToShort } = require('../utils/batchHelper');
 
 // Helper to parse dates timezone-independently
 function parseDateOnly(dateInput) {
@@ -254,30 +256,51 @@ async function processContestUpload(req, res) {
 // 2. Get attendance sheets/list for a specific contest
 async function getContestAttendance(req, res) {
   const { contestId } = req.params;
-  const { batch, department, section } = req.query;
+  let { batch, department, section } = req.query;
   const cName = contestId;
+
+  // Normalize batch YYYY-YYYY format to YYYY-YY
+  batch = normalizeBatchToShort(batch);
 
   if (!cName) {
     return res.status(400).json({ success: false, message: 'Contest name/ID is required.' });
   }
 
   try {
+    // 1. Resolve the contest and its platform
+    const contestRows = await db.query(
+      "SELECT contest_id, platform, title, start_time, slug, contest_status, duration FROM Contests WHERE contest_id = ? OR slug = ?",
+      [cName, cName]
+    );
+    if (contestRows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Contest not found.' });
+    }
+    const contest = contestRows[0];
+    const platform = (contest.platform || 'LeetCode').toLowerCase();
+
+    // Map platform parameters
+    const usernameCol = `${platform}_username`;
+    const profileTable = platform === 'leetcode' ? 'LeetCodeProfiles' : 
+                         platform === 'codechef' ? 'CodeChefProfiles' : 'CodeforcesProfiles';
+    const defaultRating = platform === 'leetcode' ? 1500 : 0;
+
+    // 2. Fetch all active students, left-joining correct platform profile
     let sql = `
-      SELECT u.id as student_id, u.roll_no as register_number, u.name, u.department, u.section, u.academic_batch as academic_year, u.leetcode_username,
+      SELECT u.id as student_id, u.roll_no as register_number, u.name, u.department, u.section, u.academic_batch as academic_year,
+             u.${usernameCol} as platform_username,
              u.academic_start_date, u.academic_end_date,
-             c.contest_id, c.title as contest_name, c.start_time as contest_date, c.slug as contest_slug, c.contest_status, c.duration,
              ar.attendance_status, ar.attendance_source, ar.last_updated, ar.remarks,
-             (SELECT registration_time FROM Registrations r WHERE r.user_id = u.id AND r.contest_id = c.contest_id) as registration_time,
-             (SELECT join_time FROM ParticipationLogs p WHERE p.user_id = u.id AND p.contest_id = c.contest_id) as join_time,
-             IFNULL(lp.current_rating, 1500) as current_rating,
-             (SELECT COUNT(*) FROM ParticipationLogs p WHERE p.user_id = u.id) as contests_attended
+             ar.rank as contest_rank, ar.score as problems_solved, ar.rating_change,
+             (SELECT registration_time FROM Registrations r WHERE r.user_id = u.id AND r.contest_id = ?) as registration_time,
+             (SELECT join_time FROM ParticipationLogs p WHERE p.user_id = u.id AND p.contest_id = ?) as join_time,
+             IFNULL(lp.current_rating, ${defaultRating}) as current_rating
       FROM Users u
-      CROSS JOIN Contests c
-      LEFT JOIN AttendanceRecords ar ON u.id = ar.user_id AND c.contest_id = ar.contest_id
-      LEFT JOIN LeetCodeProfiles lp ON u.id = lp.user_id
-      WHERE (c.contest_id = ? OR c.slug = ?) AND u.status = 'active'
+      LEFT JOIN AttendanceRecords ar ON u.id = ar.user_id AND ar.contest_id = ?
+      LEFT JOIN ${profileTable} lp ON u.id = lp.user_id
+      WHERE u.status = 'active'
     `;
-    const params = [cName, cName];
+    const params = [contest.contest_id, contest.contest_id, contest.contest_id];
+
     if (batch) {
       sql += ` AND u.academic_batch = ?`;
       params.push(batch);
@@ -295,13 +318,9 @@ async function getContestAttendance(req, res) {
     const list = await db.query(sql, params);
     const now = new Date();
 
-    const hasRankingData = list.some(item => 
-      (item.attendance_status === 'PRESENT' && item.attendance_source === 'AUTO') || item.join_time
-    );
-
     const eligibleList = list.filter(item => {
       if (!item.academic_start_date || !item.academic_end_date) return false;
-      const cDate = parseDateOnly(item.contest_date);
+      const cDate = parseDateOnly(contest.start_time);
       const start = parseDateOnly(item.academic_start_date);
       const end = parseDateOnly(item.academic_end_date);
       end.setHours(23, 59, 59, 999);
@@ -309,34 +328,40 @@ async function getContestAttendance(req, res) {
     });
 
     const formatted = eligibleList.map(item => {
-      const cDateVal = new Date(item.contest_date);
-      const durationMs = (item.duration || 5400) * 1000;
+      const cDateVal = new Date(contest.start_time);
+      const durationMs = (contest.duration || 5400) * 1000;
       const endTime = new Date(cDateVal.getTime() + durationMs);
       const isOngoing = cDateVal <= now && endTime > now;
-      const isUnrated = item.contest_status && item.contest_status.toLowerCase() === 'unrated';
+      const isUnrated = contest.contest_status && contest.contest_status.toLowerCase() === 'unrated';
       const isRegistered = item.registration_time !== null;
 
-      let status = 'absent';
-      
       // Determine final status
+      let status = 'absent';
+      let hasAttended = false;
+
       if (item.attendance_source === 'MANUAL' && item.attendance_status) {
-        status = item.attendance_status.toLowerCase();
+        hasAttended = item.attendance_status === 'PRESENT';
       } else {
-        if (isUnrated) {
-          status = isRegistered ? 'unrated contest' : 'absent';
+        hasAttended = item.attendance_status === 'PRESENT' || item.join_time !== null;
+      }
+
+      if (isOngoing || now < cDateVal) {
+        status = 'contest in progress';
+      } else if (isUnrated) {
+        status = hasAttended ? 'present' : 'absent';
+      } else {
+        status = hasAttended ? 'present' : 'absent';
+      }
+
+      // Determine reason if absent
+      let reason = null;
+      if (status === 'absent') {
+        if (!item.platform_username || !item.platform_username.trim()) {
+          reason = 'Username Not Linked';
+        } else if (!isRegistered) {
+          reason = 'Not Registered';
         } else {
-          const isPresent = item.attendance_status === 'PRESENT' || item.join_time !== null;
-          if (isPresent) {
-            status = 'present';
-          } else {
-            if (isOngoing || now < cDateVal) {
-              status = 'contest in progress';
-            } else if (!hasRankingData) {
-              status = 'waiting for rankings';
-            } else {
-              status = 'absent';
-            }
-          }
+          reason = 'Registered but Did Not Participate';
         }
       }
 
@@ -347,33 +372,35 @@ async function getContestAttendance(req, res) {
         department: item.department,
         section: item.section,
         academic_year: item.academic_year,
-        leetcode_username: item.leetcode_username,
-        contest_date: item.contest_date,
-        contest_slug: item.contest_slug,
-        contest_status: item.contest_status,
+        platform_username: item.platform_username || '',
+        contest_date: contest.start_time,
+        contest_slug: contest.slug,
+        contest_status: contest.contest_status,
         registration_time: item.registration_time,
         join_time: item.join_time,
         current_rating: item.current_rating,
-        contests_attended: item.contests_attended,
         status: status,
         marked_by: item.attendance_source === 'MANUAL' ? 'faculty' : 'system',
         remarks: item.remarks,
         last_updated: item.last_updated,
-        problems_solved: status === 'present' ? 4 : (status === 'unrated contest' ? 4 : 0),
-        total_problems: 4
+        contest_rank: item.contest_rank,
+        rating_change: item.rating_change || 0,
+        problems_solved: item.problems_solved !== null ? item.problems_solved : (status === 'present' ? 4 : 0),
+        total_problems: platform === 'leetcode' ? 4 : null,
+        reason: reason
       };
     });
 
-    const presentCount = formatted.filter(s => s.status === 'present' || s.status === 'unrated contest').length;
+    const presentList = formatted.filter(s => s.status === 'present');
+    const absentList = formatted.filter(s => s.status === 'absent');
 
-    console.log(`[Attendance API Log] Selected Contest ID: ${cName}`);
-    console.log(`[Attendance API Log] API Request URL: ${req.originalUrl || '/api/attendance/contest'}`);
-    console.log(`[Attendance API Log] Student Count: ${formatted.length} eligible`);
-    console.log(`[Attendance API Log] Participant Count: ${presentCount}`);
-    console.log(`[Attendance API Log] Matching Results: present/unrated=${presentCount}, absent=${formatted.length - presentCount}`);
-    console.log(`[Attendance API Log] API Response: success=true, count=${formatted.length}`);
-
-    return res.json({ success: true, count: formatted.length, data: formatted });
+    return res.json({ 
+      success: true, 
+      count: formatted.length, 
+      data: formatted,
+      attended: presentList,
+      missed: absentList
+    });
   } catch (error) {
     console.error('[Attendance API Log] Error fetching contest attendance:', error.stack || error);
     return res.status(500).json({ 
@@ -496,14 +523,14 @@ async function getStudentAttendanceHistory(req, res) {
 
   try {
     const studentRows = await db.query(
-      "SELECT id, name, roll_no, department, leetcode_username, academic_batch, academic_start_date, academic_end_date FROM Users WHERE id = ?",
+      "SELECT id, name, roll_no, department, leetcode_username, codechef_username, academic_batch, academic_start_date, academic_end_date FROM Users WHERE id = ?",
       [studentId]
     );
     if (studentRows.length === 0) {
       return res.status(404).json({ success: false, message: 'Student not found.' });
     }
     const student = studentRows[0];
-    const { leetcode_username } = student;
+    const { leetcode_username, codechef_username } = student;
     const startDate = parseDateOnly(student.academic_start_date);
     const endDate = parseDateOnly(student.academic_end_date);
     endDate.setHours(23, 59, 59, 999);
@@ -561,7 +588,71 @@ async function getStudentAttendanceHistory(req, res) {
       attendedContestsCount: rawHistory.length
     } : null;
 
-    // Build map of attended contests
+    // ── CodeChef History ──────────────────────────────────────────────────────
+    let codechefHistory = [];
+    let codechefRanking = null;
+
+    if (codechef_username && codechef_username.trim()) {
+      // Try DB cache first
+      let ccProfileRows = await db.query(
+        "SELECT current_rating, highest_rating, global_ranking, stars, contest_history FROM CodeChefProfiles WHERE user_id = ?",
+        [studentId]
+      );
+      let ccProfile = ccProfileRows.length > 0 ? ccProfileRows[0] : null;
+      let rawCcHistory = ccProfile && ccProfile.contest_history ? JSON.parse(ccProfile.contest_history) : [];
+
+      // Refresh if requested or cache is empty
+      if (refresh === 'true' || !ccProfile || !ccProfile.contest_history || rawCcHistory.length === 0) {
+        console.log(`[Attendance API] Refreshing CodeChef history for ${codechef_username}...`);
+        try {
+          const ccData = await getUserCodeChefStats(codechef_username);
+          if (ccData && ccData.success) {
+            const ccContestList = ccData.contestHistory || [];
+            const ccRating = ccData.rating || 0;
+            const ccHighest = ccData.maxRating || ccRating;
+            const ccHistoryJson = JSON.stringify(ccContestList);
+
+            await db.query(`
+              INSERT INTO CodeChefProfiles (user_id, current_rating, highest_rating, global_ranking, problems_solved, stars, contest_history)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+              ON DUPLICATE KEY UPDATE
+                current_rating = VALUES(current_rating),
+                highest_rating = VALUES(highest_rating),
+                global_ranking = VALUES(global_ranking),
+                problems_solved = VALUES(problems_solved),
+                stars = VALUES(stars),
+                contest_history = VALUES(contest_history)
+            `, [studentId, ccRating, ccHighest, ccData.globalRanking || null, ccData.problemsSolved || 0, ccData.stars || null, ccHistoryJson]);
+
+            // Reload from DB
+            ccProfileRows = await db.query(
+              "SELECT current_rating, highest_rating, global_ranking, stars, contest_history FROM CodeChefProfiles WHERE user_id = ?",
+              [studentId]
+            );
+            ccProfile = ccProfileRows.length > 0 ? ccProfileRows[0] : null;
+            rawCcHistory = ccContestList;
+            console.log(`[Attendance API] CodeChef sync complete for ${codechef_username}: ${ccContestList.length} contests fetched.`);
+          }
+        } catch (ccErr) {
+          console.error(`[Attendance API] CodeChef sync failed for ${codechef_username}:`, ccErr.message);
+          // Fall back to cached data
+        }
+      }
+
+      codechefHistory = rawCcHistory;
+      if (ccProfile) {
+        codechefRanking = {
+          rating: ccProfile.current_rating || 0,
+          highestRating: ccProfile.highest_rating || 0,
+          globalRanking: ccProfile.global_ranking || null,
+          stars: ccProfile.stars || null,
+          attendedContestsCount: rawCcHistory.length
+        };
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Build map of attended LeetCode contests
     const attendedTitles = new Set();
     rawHistory.forEach(h => {
       if (h.attended && h.contest && h.contest.title) {
@@ -614,13 +705,24 @@ async function getStudentAttendanceHistory(req, res) {
         attendanceStatus = 'ABSENT';
       }
 
-      // Extract performance data from history if present
+      // Extract performance data from LeetCode history if available
       const lcMatch = rawHistory.find(h => h.contest && h.contest.title.trim().toLowerCase() === item.contest_name.trim().toLowerCase());
-      const problems_solved = lcMatch ? lcMatch.problemsSolved : (attendanceStatus === 'PRESENT' ? 4 : 0);
-      const total_problems = lcMatch ? lcMatch.totalProblems : 4;
-      const global_rank = lcMatch ? lcMatch.ranking : null;
-      const rating = lcMatch ? Math.round(lcMatch.rating) : null;
-      const rating_change = (lcMatch && lcMatch.ratingChange) ? parseFloat(lcMatch.ratingChange) : 0;
+
+      // Also check CodeChef history for this contest (by title match)
+      const normalizedTitle = item.contest_name.trim().toLowerCase();
+      const ccMatch = codechefHistory.find(h => {
+        const ccTitle = (h.contestName || (h.contest && h.contest.title) || '').trim().toLowerCase();
+        return ccTitle === normalizedTitle;
+      });
+
+      // Prefer LeetCode match, fall back to CodeChef match
+      const perfMatch = lcMatch || ccMatch;
+
+      const problems_solved = lcMatch ? lcMatch.problemsSolved : (ccMatch ? null : (attendanceStatus === 'PRESENT' ? 4 : 0));
+      const total_problems = lcMatch ? lcMatch.totalProblems : (ccMatch ? null : 4);
+      const global_rank = lcMatch ? lcMatch.ranking : (ccMatch ? ccMatch.rank : null);
+      const rating = lcMatch ? Math.round(lcMatch.rating) : (ccMatch ? ccMatch.newRating : null);
+      const rating_change = lcMatch && lcMatch.ratingChange ? parseFloat(lcMatch.ratingChange) : (ccMatch ? ccMatch.ratingChange : 0);
 
       return {
         ...item,
@@ -669,7 +771,9 @@ async function getStudentAttendanceHistory(req, res) {
       metrics,
       data: formatted,
       leetcodeHistory: rawHistory,
-      leetcodeRanking: leetcodeRanking
+      leetcodeRanking,
+      codechefHistory,
+      codechefRanking
     });
   } catch (error) {
     console.error('Error fetching student attendance history:', error);

@@ -595,6 +595,16 @@ async function run() {
           global_ranking INT DEFAULT NULL,
           problems_solved INT DEFAULT 0,
           contest_history LONGTEXT DEFAULT NULL,
+          active_days INT DEFAULT 0,
+          submission_calendar JSON DEFAULT NULL,
+          badges JSON DEFAULT NULL,
+          language_stats JSON DEFAULT NULL,
+          topic_stats JSON DEFAULT NULL,
+          recent_submissions JSON DEFAULT NULL,
+          easy_solved INT DEFAULT 0,
+          medium_solved INT DEFAULT 0,
+          hard_solved INT DEFAULT 0,
+          acceptance_rate DECIMAL(5,2) DEFAULT NULL,
           last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB;
       `);
@@ -822,6 +832,514 @@ async function run() {
         ON DUPLICATE KEY UPDATE executed_at = CURRENT_TIMESTAMP;
       `);
       console.log('[Migration] Migration "dynamic_department_management" completed.');
+    }
+
+    // ==========================================
+    // MIGRATION 7: integrate_multi_platform
+    // ==========================================
+    const rows7 = await db.query(
+      "SELECT 1 FROM Schema_Migrations WHERE migration_name = 'integrate_multi_platform'"
+    );
+
+    if (rows7.length > 0) {
+      console.log('[Migration] Migration "integrate_multi_platform" is already executed. Skipping.');
+    } else {
+      console.log('[Migration] Executing migration "integrate_multi_platform"...');
+
+      // 1. Add username columns to Users table
+      console.log('[Migration] Adding platform username columns to Users table...');
+      const userColumns = await db.query("SHOW COLUMNS FROM Users");
+      const userColNames = userColumns.map(c => c.Field.toLowerCase());
+
+      if (!userColNames.includes('codechef_username')) {
+        await db.query("ALTER TABLE Users ADD COLUMN codechef_username VARCHAR(100) DEFAULT NULL UNIQUE;");
+        console.log('[Migration] Added codechef_username column to Users.');
+      }
+      if (!userColNames.includes('codeforces_username')) {
+        await db.query("ALTER TABLE Users ADD COLUMN codeforces_username VARCHAR(100) DEFAULT NULL UNIQUE;");
+        console.log('[Migration] Added codeforces_username column to Users.');
+      }
+      if (!userColNames.includes('hackerrank_username')) {
+        await db.query("ALTER TABLE Users ADD COLUMN hackerrank_username VARCHAR(100) DEFAULT NULL UNIQUE;");
+        console.log('[Migration] Added hackerrank_username column to Users.');
+      }
+
+      // 2. Create CodeChefProfiles table
+      console.log('[Migration] Creating CodeChefProfiles table...');
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS CodeChefProfiles (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL UNIQUE,
+          current_rating INT DEFAULT NULL,
+          highest_rating INT DEFAULT NULL,
+          global_ranking INT DEFAULT NULL,
+          country_rank INT DEFAULT NULL,
+          problems_solved INT DEFAULT 0,
+          stars VARCHAR(10) DEFAULT NULL,
+          contest_history LONGTEXT DEFAULT NULL,
+          last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          CONSTRAINT fk_codechef_profile_user FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB;
+      `);
+
+      // 3. Create CodeforcesProfiles table
+      console.log('[Migration] Creating CodeforcesProfiles table...');
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS CodeforcesProfiles (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL UNIQUE,
+          current_rating INT DEFAULT NULL,
+          highest_rating INT DEFAULT NULL,
+          \`rank\` VARCHAR(100) DEFAULT NULL,
+          max_rank VARCHAR(100) DEFAULT NULL,
+          problems_solved INT DEFAULT 0,
+          contest_history LONGTEXT DEFAULT NULL,
+          last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          CONSTRAINT fk_codeforces_profile_user FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB;
+      `);
+
+      // 4. Create HackerRankProfiles table
+      console.log('[Migration] Creating HackerRankProfiles table...');
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS HackerRankProfiles (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL UNIQUE,
+          badges LONGTEXT DEFAULT NULL,
+          stars INT DEFAULT 0,
+          certificates LONGTEXT DEFAULT NULL,
+          problems_solved INT DEFAULT 0,
+          last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          CONSTRAINT fk_hackerrank_profile_user FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB;
+      `);
+
+      await db.query(`
+        INSERT INTO Schema_Migrations (migration_name) 
+        VALUES ('integrate_multi_platform')
+        ON DUPLICATE KEY UPDATE executed_at = CURRENT_TIMESTAMP;
+      `);
+      console.log('[Migration] Migration "integrate_multi_platform" completed.');
+    }
+
+    // ==========================================
+    // MIGRATION 8: analytics_infrastructure
+    // ==========================================
+    const rows8 = await db.query(
+      "SELECT 1 FROM Schema_Migrations WHERE migration_name = 'analytics_infrastructure'"
+    );
+
+    if (rows8.length > 0) {
+      console.log('[Migration] Migration "analytics_infrastructure" is already executed. Skipping.');
+    } else {
+      console.log('[Migration] Executing migration "analytics_infrastructure"...');
+
+      // 1. Create AuditLog table
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS AuditLog (
+          id BIGINT AUTO_INCREMENT PRIMARY KEY,
+          action VARCHAR(100) NOT NULL,
+          actor VARCHAR(255) DEFAULT 'SYSTEM',
+          target_type VARCHAR(100) DEFAULT NULL,
+          target_id VARCHAR(255) DEFAULT NULL,
+          details LONGTEXT DEFAULT NULL,
+          severity ENUM('INFO','WARNING','ERROR') DEFAULT 'INFO',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_audit_action (action),
+          INDEX idx_audit_created (created_at),
+          INDEX idx_audit_severity (severity)
+        ) ENGINE=InnoDB
+      `);
+      console.log('[Migration] Created AuditLog table.');
+
+      // 2. Create PlatformHealth table
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS PlatformHealth (
+          platform VARCHAR(50) PRIMARY KEY,
+          status VARCHAR(20) DEFAULT 'unknown',
+          success_count INT DEFAULT 0,
+          failure_count INT DEFAULT 0,
+          avg_latency_ms INT DEFAULT 0,
+          consecutive_failures INT DEFAULT 0,
+          last_success_at TIMESTAMP NULL,
+          last_failure_at TIMESTAMP NULL,
+          last_error TEXT DEFAULT NULL,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB
+      `);
+      console.log('[Migration] Created PlatformHealth table.');
+
+      // 3. Add severity column to notifications (if missing)
+      const notifCols = await db.query("SHOW COLUMNS FROM notifications");
+      const notifColNames = notifCols.map(c => c.Field.toLowerCase());
+      if (!notifColNames.includes('severity')) {
+        await db.query("ALTER TABLE notifications ADD COLUMN severity ENUM('INFO','WARNING','CRITICAL') DEFAULT 'INFO' AFTER type");
+        console.log('[Migration] Added severity column to notifications.');
+      }
+      if (!notifColNames.includes('archived')) {
+        await db.query("ALTER TABLE notifications ADD COLUMN archived BOOLEAN DEFAULT FALSE AFTER is_read");
+        console.log('[Migration] Added archived column to notifications.');
+      }
+      if (!notifColNames.includes('contest_id')) {
+        await db.query("ALTER TABLE notifications ADD COLUMN contest_id INT DEFAULT NULL AFTER student_id");
+        console.log('[Migration] Added contest_id column to notifications.');
+      }
+
+      // Record migration
+      await db.query(`
+        INSERT INTO Schema_Migrations (migration_name)
+        VALUES ('analytics_infrastructure')
+        ON DUPLICATE KEY UPDATE executed_at = CURRENT_TIMESTAMP;
+      `);
+      console.log('[Migration] Migration "analytics_infrastructure" completed.');
+    }
+
+    // ==========================================
+    // MIGRATION 9: data_validation_and_audit
+    // ==========================================
+    const rows9 = await db.query(
+      "SELECT 1 FROM Schema_Migrations WHERE migration_name = 'data_validation_and_audit'"
+    );
+
+    if (rows9.length > 0) {
+      console.log('[Migration] Migration "data_validation_and_audit" is already executed. Skipping.');
+    } else {
+      console.log('[Migration] Executing migration "data_validation_and_audit"...');
+
+      // 1. Upgrade AuditLog table
+      console.log('[Migration] Upgrading AuditLog table...');
+      const auditCols = await db.query("SHOW COLUMNS FROM AuditLog");
+      const auditColNames = auditCols.map(c => c.Field.toLowerCase());
+      if (!auditColNames.includes('result')) {
+        await db.query("ALTER TABLE AuditLog ADD COLUMN result VARCHAR(50) DEFAULT NULL AFTER severity");
+      }
+      if (!auditColNames.includes('duration_ms')) {
+        await db.query("ALTER TABLE AuditLog ADD COLUMN duration_ms INT DEFAULT NULL AFTER result");
+      }
+      if (!auditColNames.includes('source_platform')) {
+        await db.query("ALTER TABLE AuditLog ADD COLUMN source_platform VARCHAR(50) DEFAULT NULL AFTER duration_ms");
+      }
+
+      // 2. Create ValidationLogs table
+      console.log('[Migration] Creating ValidationLogs table...');
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS ValidationLogs (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          platform VARCHAR(50) NOT NULL,
+          record_type VARCHAR(100) NOT NULL,
+          record_id VARCHAR(255) DEFAULT NULL,
+          invalid_data LONGTEXT DEFAULT NULL,
+          reason VARCHAR(255) NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB
+      `);
+
+      // 3. Create AmbiguousContestMatches table
+      console.log('[Migration] Creating AmbiguousContestMatches table...');
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS AmbiguousContestMatches (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          student_id INT NOT NULL,
+          fetched_contest_name VARCHAR(255) NOT NULL,
+          matched_contest_id INT NOT NULL,
+          confidence_score INT NOT NULL,
+          status VARCHAR(20) DEFAULT 'PENDING',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (student_id) REFERENCES Users(id) ON DELETE CASCADE,
+          FOREIGN KEY (matched_contest_id) REFERENCES Contests(contest_id) ON DELETE CASCADE
+        ) ENGINE=InnoDB
+      `);
+
+      // 4. Create colleges table
+      console.log('[Migration] Creating colleges table...');
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS colleges (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          name VARCHAR(150) NOT NULL UNIQUE,
+          code VARCHAR(50) NOT NULL UNIQUE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB
+      `);
+
+      // Seed default college
+      await db.query(`
+        INSERT IGNORE INTO colleges (name, code)
+        VALUES ('Default Engineering College', 'DEC')
+      `);
+
+      // 5. Add college_code to Users and departments
+      console.log('[Migration] Partitioning tables by college_code...');
+      const userCols = await db.query("SHOW COLUMNS FROM Users");
+      const userColNames = userCols.map(c => c.Field.toLowerCase());
+      if (!userColNames.includes('college_code')) {
+        await db.query("ALTER TABLE Users ADD COLUMN college_code VARCHAR(50) DEFAULT 'DEC' AFTER id");
+        try {
+          await db.query("ALTER TABLE Users ADD CONSTRAINT fk_users_college FOREIGN KEY (college_code) REFERENCES colleges(code) ON UPDATE CASCADE ON DELETE RESTRICT");
+        } catch (e) {
+          console.warn('[Migration] Could not add fk_users_college constraint:', e.message);
+        }
+      }
+
+      const deptCols = await db.query("SHOW COLUMNS FROM departments");
+      const deptColNames = deptCols.map(c => c.Field.toLowerCase());
+      if (!deptColNames.includes('college_code')) {
+        await db.query("ALTER TABLE departments ADD COLUMN college_code VARCHAR(50) DEFAULT 'DEC' AFTER id");
+        try {
+          await db.query("ALTER TABLE departments ADD CONSTRAINT fk_depts_college FOREIGN KEY (college_code) REFERENCES colleges(code) ON UPDATE CASCADE ON DELETE RESTRICT");
+        } catch (e) {
+          console.warn('[Migration] Could not add fk_depts_college constraint:', e.message);
+        }
+      }
+
+      // 6. Create Accounts table
+      console.log('[Migration] Creating Accounts table...');
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS Accounts (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          username VARCHAR(100) UNIQUE NOT NULL,
+          password_hash VARCHAR(255) NOT NULL,
+          email VARCHAR(150) UNIQUE DEFAULT NULL,
+          name VARCHAR(150) DEFAULT NULL,
+          role ENUM('Super Admin', 'HOD', 'Faculty', 'Placement Coordinator', 'Student') NOT NULL,
+          student_id INT DEFAULT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (student_id) REFERENCES Users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB
+      `);
+
+      // 7. Seed default accounts
+      const bcrypt = require('bcryptjs');
+      const superAdminHash = await bcrypt.hash('admin123', 10);
+      const hodHash = await bcrypt.hash('hod123', 10);
+      const facultyHash = await bcrypt.hash('faculty123', 10);
+      const placementHash = await bcrypt.hash('placement123', 10);
+
+      await db.query(`
+        INSERT IGNORE INTO Accounts (username, password_hash, role, name, email)
+        VALUES 
+          ('admin', ?, 'Super Admin', 'System Administrator', 'admin@college.edu'),
+          ('hod', ?, 'HOD', 'Head of Department', 'hod@college.edu'),
+          ('faculty', ?, 'Faculty', 'Faculty Coordinator', 'faculty@college.edu'),
+          ('placement', ?, 'Placement Coordinator', 'Placement Officer', 'placement@college.edu')
+      `, [superAdminHash, hodHash, facultyHash, placementHash]);
+
+      // Seed Student accounts based on existing Users table
+      console.log('[Migration] Seeding Student accounts...');
+      const existingUsers = await db.query("SELECT id, name, roll_no FROM Users");
+      for (const u of existingUsers) {
+        const studentHash = await bcrypt.hash(u.roll_no, 10); // default password is roll number
+        await db.query(`
+          INSERT IGNORE INTO Accounts (username, password_hash, role, name, student_id)
+          VALUES (?, ?, 'Student', ?, ?)
+        `, [u.roll_no, studentHash, u.name, u.id]);
+      }
+
+      await db.query(`
+        INSERT INTO Schema_Migrations (migration_name)
+        VALUES ('data_validation_and_audit')
+        ON DUPLICATE KEY UPDATE executed_at = CURRENT_TIMESTAMP;
+      `);
+      console.log('[Migration] Migration "data_validation_and_audit" completed.');
+    }
+
+    // ==========================================================
+    // MIGRATION 10: enterprise_contest_attendance_tracker
+    // ==========================================================
+    const rows10 = await db.query(
+      "SELECT 1 FROM Schema_Migrations WHERE migration_name = 'enterprise_contest_attendance_tracker'"
+    );
+
+    if (rows10.length > 0) {
+      console.log('[Migration] Migration "enterprise_contest_attendance_tracker" is already executed. Skipping.');
+    } else {
+      console.log('[Migration] Executing migration "enterprise_contest_attendance_tracker"...');
+
+      // 1. Create LiveContests table
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS LiveContests (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          platform ENUM('LeetCode', 'CodeChef', 'Codeforces', 'AtCoder') NOT NULL,
+          contestSlug VARCHAR(255) UNIQUE NOT NULL,
+          contestName VARCHAR(255) NOT NULL,
+          contestType VARCHAR(100) NOT NULL,
+          startTime DATETIME NOT NULL,
+          endTime DATETIME NOT NULL,
+          status ENUM('Upcoming', 'Live', 'Synchronizing', 'Completed', 'Archived') NOT NULL DEFAULT 'Upcoming',
+          lastSyncAt TIMESTAMP NULL DEFAULT NULL,
+          totalParticipants INT DEFAULT 0,
+          syncProgress DECIMAL(5,2) DEFAULT 0.00,
+          createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_live_contests_status (status),
+          INDEX idx_live_contests_slug (contestSlug)
+        ) ENGINE=InnoDB;
+      `);
+      console.log('[Migration] Created LiveContests table.');
+
+      // 2. Create ContestAttendance table
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS ContestAttendance (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          contestId INT NOT NULL,
+          studentId INT NOT NULL,
+          username VARCHAR(100) NOT NULL,
+          attendanceStatus ENUM('Unknown', 'Participating', 'Present', 'Absent') NOT NULL DEFAULT 'Unknown',
+          \`rank\` INT DEFAULT NULL,
+          solved INT DEFAULT 0,
+          score DECIMAL(10,2) DEFAULT 0.00,
+          penalty INT DEFAULT 0,
+          ratingBefore DECIMAL(8,3) DEFAULT NULL,
+          ratingAfter DECIMAL(8,3) DEFAULT NULL,
+          ratingChange DECIMAL(8,3) DEFAULT NULL,
+          firstDetectedAt TIMESTAMP NULL DEFAULT NULL,
+          lastUpdatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_student_live_contest (studentId, contestId),
+          INDEX idx_attendance_contest_student (contestId, studentId),
+          INDEX idx_attendance_status (attendanceStatus),
+          INDEX idx_attendance_updated (lastUpdatedAt),
+          CONSTRAINT fk_attendance_live_contest FOREIGN KEY (contestId) REFERENCES LiveContests(id) ON DELETE CASCADE,
+          CONSTRAINT fk_attendance_live_student FOREIGN KEY (studentId) REFERENCES Users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB;
+      `);
+      console.log('[Migration] Created ContestAttendance table.');
+
+      // 3. Create ContestSnapshots table
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS ContestSnapshots (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          contestId INT NOT NULL,
+          snapshotTime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          participants INT DEFAULT 0,
+          attendancePercentage DECIMAL(5,2) DEFAULT 0.00,
+          averageSolved DECIMAL(5,2) DEFAULT 0.00,
+          highestRank INT DEFAULT NULL,
+          averageRank DECIMAL(10,2) DEFAULT NULL,
+          INDEX idx_snapshots_contest (contestId),
+          CONSTRAINT fk_snapshots_live_contest FOREIGN KEY (contestId) REFERENCES LiveContests(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB;
+      `);
+      console.log('[Migration] Created ContestSnapshots table.');
+
+      // 4. Create ContestSyncLog table
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS ContestSyncLog (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          contestId INT NOT NULL,
+          syncStarted DATETIME NOT NULL,
+          syncCompleted DATETIME NULL DEFAULT NULL,
+          pagesFetched INT DEFAULT 0,
+          participantsFetched INT DEFAULT 0,
+          errors TEXT DEFAULT NULL,
+          duration INT DEFAULT NULL,
+          INDEX idx_sync_log_contest (contestId),
+          CONSTRAINT fk_sync_log_live_contest FOREIGN KEY (contestId) REFERENCES LiveContests(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB;
+      `);
+      console.log('[Migration] Created ContestSyncLog table.');
+
+      await db.query(`
+        INSERT INTO Schema_Migrations (migration_name)
+        VALUES ('enterprise_contest_attendance_tracker')
+        ON DUPLICATE KEY UPDATE executed_at = CURRENT_TIMESTAMP;
+      `);
+      console.log('[Migration] Migration "enterprise_contest_attendance_tracker" completed.');
+    }
+
+    // ==========================================================
+    // MIGRATION 11: contest_leaderboard_sync_service
+    // ==========================================================
+    const rows11 = await db.query(
+      "SELECT 1 FROM Schema_Migrations WHERE migration_name = 'contest_leaderboard_sync_service'"
+    );
+
+    if (rows11.length > 0) {
+      console.log('[Migration] Migration "contest_leaderboard_sync_service" is already executed. Skipping.');
+    } else {
+      console.log('[Migration] Executing migration "contest_leaderboard_sync_service"...');
+
+      // 1. Create ContestParticipants table
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS ContestParticipants (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          contest_slug VARCHAR(255) NOT NULL,
+          username VARCHAR(100) NOT NULL,
+          \`rank\` INT NOT NULL,
+          score DECIMAL(10,2) NOT NULL,
+          finish_time INT NOT NULL,
+          avatar VARCHAR(255) DEFAULT NULL,
+          country VARCHAR(100) DEFAULT NULL,
+          page_number INT NOT NULL,
+          synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_contest_username (contest_slug, username),
+          INDEX idx_contest_slug (contest_slug),
+          INDEX idx_username (username)
+        ) ENGINE=InnoDB;
+      `);
+      console.log('[Migration] Created ContestParticipants table.');
+
+      // 2. Create ContestLeaderboardSnapshots table
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS ContestLeaderboardSnapshots (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          contest_slug VARCHAR(255) NOT NULL,
+          page_number INT NOT NULL,
+          raw_json LONGTEXT NOT NULL,
+          downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_contest_page (contest_slug, page_number),
+          INDEX idx_contest_slug (contest_slug)
+        ) ENGINE=InnoDB;
+      `);
+      console.log('[Migration] Created ContestLeaderboardSnapshots table.');
+
+      // 3. Add columns to ContestSyncLog
+      const syncLogColumns = await db.query("SHOW COLUMNS FROM ContestSyncLog");
+      const syncLogColNames = syncLogColumns.map(c => c.Field.toLowerCase());
+
+      if (!syncLogColNames.includes('contest_slug')) {
+        await db.query("ALTER TABLE ContestSyncLog ADD COLUMN contest_slug VARCHAR(255) NULL AFTER contestId");
+        console.log('[Migration] Added contest_slug to ContestSyncLog.');
+      }
+      if (!syncLogColNames.includes('sync_status')) {
+        await db.query("ALTER TABLE ContestSyncLog ADD COLUMN sync_status VARCHAR(50) DEFAULT 'RUNNING' AFTER contest_slug");
+        console.log('[Migration] Added sync_status to ContestSyncLog.');
+      }
+      if (!syncLogColNames.includes('last_page_synced')) {
+        await db.query("ALTER TABLE ContestSyncLog ADD COLUMN last_page_synced INT DEFAULT 0 AFTER sync_status");
+        console.log('[Migration] Added last_page_synced to ContestSyncLog.');
+      }
+      if (!syncLogColNames.includes('participants_synced')) {
+        await db.query("ALTER TABLE ContestSyncLog ADD COLUMN participants_synced INT DEFAULT 0 AFTER last_page_synced");
+        console.log('[Migration] Added participants_synced to ContestSyncLog.');
+      }
+      if (!syncLogColNames.includes('total_requests')) {
+        await db.query("ALTER TABLE ContestSyncLog ADD COLUMN total_requests INT DEFAULT 0 AFTER participants_synced");
+        console.log('[Migration] Added total_requests to ContestSyncLog.');
+      }
+      if (!syncLogColNames.includes('failed_requests')) {
+        await db.query("ALTER TABLE ContestSyncLog ADD COLUMN failed_requests INT DEFAULT 0 AFTER total_requests");
+        console.log('[Migration] Added failed_requests to ContestSyncLog.');
+      }
+      if (!syncLogColNames.includes('retry_count')) {
+        await db.query("ALTER TABLE ContestSyncLog ADD COLUMN retry_count INT DEFAULT 0 AFTER failed_requests");
+        console.log('[Migration] Added retry_count to ContestSyncLog.');
+      }
+      if (!syncLogColNames.includes('started_at')) {
+        await db.query("ALTER TABLE ContestSyncLog ADD COLUMN started_at DATETIME NULL AFTER retry_count");
+        console.log('[Migration] Added started_at to ContestSyncLog.');
+      }
+      if (!syncLogColNames.includes('completed_at')) {
+        await db.query("ALTER TABLE ContestSyncLog ADD COLUMN completed_at DATETIME NULL AFTER started_at");
+        console.log('[Migration] Added completed_at to ContestSyncLog.');
+      }
+
+      await db.query(`
+        INSERT INTO Schema_Migrations (migration_name)
+        VALUES ('contest_leaderboard_sync_service')
+        ON DUPLICATE KEY UPDATE executed_at = CURRENT_TIMESTAMP;
+      `);
+      console.log('[Migration] Migration "contest_leaderboard_sync_service" completed.');
     }
 
     process.exit(0);

@@ -22,10 +22,15 @@ router.get('/archive-summary', studentController.getArchivedSummary);
 router.get('/batches', studentController.getUniqueBatches);
 router.get('/sections', studentController.getUniqueSections);
 
+const { authenticate, authorize } = require('../middlewares/authMiddleware');
+router.get('/data-health', authenticate, authorize(['Super Admin']), studentController.getStudentsDataHealth);
+
 // Handle verification helper
 router.get('/verify-leetcode/:username', studentController.checkUsername);
+router.get('/verify-platform/:platform/:username', studentController.checkPlatformUsername);
 
-// LeetCode Stats route
+// Unified profile and platform stats routes
+router.get('/:id/unified-profile', studentController.getUnifiedProfileById);
 router.get('/:id/leetcode-stats', studentController.getLeetCodeStatsById);
 
 module.exports = router;

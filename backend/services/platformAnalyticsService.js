@@ -1,0 +1,395 @@
+/**
+ * PlatformAnalyticsService
+ * ========================
+ * Unified cross-platform analytics:
+ * - Leaderboards (by rating, solved, attendance, score)
+ * - Department analytics with platform adoption
+ * - Rating distribution histograms
+ * - Student unified profile aggregation
+ * All controllers delegate here instead of computing independently.
+ */
+
+const db = require('../config/db');
+const cache = require('./analyticsCacheService');
+const { computeOverallScore } = require('./dashboardMetricsService');
+const { parseContestHistory, normalizeLeetCodeEntry, normalizeCodeChefEntry, normalizeCodeforcesEntry } = require('./contestAnalyticsService');
+
+/**
+ * Build platform list for a user row.
+ */
+function buildPlatformList(user) {
+  return [
+    { platform: 'leetcode', label: 'LeetCode', username: user.leetcode_username },
+    { platform: 'codechef', label: 'CodeChef', username: user.codechef_username },
+    { platform: 'codeforces', label: 'Codeforces', username: user.codeforces_username },
+    { platform: 'hackerrank', label: 'HackerRank', username: user.hackerrank_username }
+  ].filter(p => p.username && String(p.username).trim());
+}
+
+/**
+ * Get leaderboard data.
+ * @param {object} filters - { department?, section?, academicBatch?, sortBy?, limit? }
+ * @returns {object} - { topPerformers, topImprovers, mostConsistent, coverageSummary }
+ */
+async function getLeaderboards({ department, section, academicBatch, sortBy = 'rating', limit = 100 } = {}) {
+  const cacheKey = cache.KEYS.LEADERBOARDS(`${department}:${section}:${academicBatch}:${sortBy}`);
+  return cache.getOrCompute(cacheKey, async () => {
+    let filterSql = '';
+    const params = [];
+    if (department) { filterSql += ' AND u.department = ?'; params.push(department); }
+    if (section) { filterSql += ' AND u.section = ?'; params.push(section); }
+    if (academicBatch) { filterSql += ' AND u.academic_batch = ?'; params.push(academicBatch); }
+
+    const baseQuery = `
+      SELECT u.id, u.name, u.roll_no as register_number,
+             u.leetcode_username, u.codechef_username, u.codeforces_username, u.hackerrank_username,
+             u.department, u.section, u.academic_batch as academic_year,
+             ROUND(IFNULL(lp.current_rating, 0)) as lc_current_rating,
+             ROUND(IFNULL(lp.highest_rating, 0)) as lc_best_rating,
+             lp.global_ranking as lc_best_rank,
+             IFNULL(lp.problems_solved, 0) as lc_solved,
+             ROUND(IFNULL(cp.current_rating, 0)) as cc_current_rating,
+             ROUND(IFNULL(cp.highest_rating, 0)) as cc_best_rating,
+             cp.stars as cc_stars,
+             IFNULL(cp.problems_solved, 0) as cc_solved,
+             ROUND(IFNULL(cfp.current_rating, 0)) as cf_current_rating,
+             ROUND(IFNULL(cfp.highest_rating, 0)) as cf_best_rating,
+             cfp.\`rank\` as cf_rank,
+             IFNULL(cfp.problems_solved, 0) as cf_solved,
+             IFNULL(hrp.problems_solved, 0) as hr_solved,
+             IFNULL(hrp.stars, 0) as hr_stars,
+             IFNULL((SELECT COUNT(*) FROM ParticipationLogs p WHERE p.user_id = u.id), 0) as contests_attended
+      FROM Users u
+      LEFT JOIN LeetCodeProfiles lp ON u.id = lp.user_id
+      LEFT JOIN CodeChefProfiles cp ON u.id = cp.user_id
+      LEFT JOIN CodeforcesProfiles cfp ON u.id = cfp.user_id
+      LEFT JOIN HackerRankProfiles hrp ON u.id = hrp.user_id
+      WHERE u.status = 'active'${filterSql}
+    `;
+
+    const rows = await db.query(baseQuery + ' ORDER BY lc_current_rating DESC, cc_current_rating DESC LIMIT ?',
+      [...params, Math.max(Number(limit), 10)]);
+
+    const enriched = rows.map(r => {
+      const totalSolved = Number(r.lc_solved) + Number(r.cc_solved) + Number(r.cf_solved) + Number(r.hr_solved);
+      const overallScore = computeOverallScore(
+        Number(r.lc_current_rating), Number(r.cc_current_rating), Number(r.cf_current_rating),
+        Number(r.lc_solved), Number(r.cc_solved), Number(r.cf_solved), Number(r.hr_solved)
+      );
+      const platformCount = buildPlatformList(r).length;
+      return {
+        ...r,
+        current_rating: Number(r.lc_current_rating),
+        best_rating: Number(r.lc_best_rating),
+        best_rank: r.lc_best_rank,
+        codechef_rating: Number(r.cc_current_rating),
+        codeforces_rating: Number(r.cf_current_rating),
+        problems_solved: totalSolved,
+        overall_score: overallScore,
+        platform_count: platformCount,
+        platforms: buildPlatformList(r)
+      };
+    });
+
+    // Sort variants
+    let topPerformers = [...enriched];
+    if (sortBy === 'solved') topPerformers.sort((a, b) => b.problems_solved - a.problems_solved);
+    else if (sortBy === 'attendance') topPerformers.sort((a, b) => b.contests_attended - a.contests_attended);
+    else if (sortBy === 'score') topPerformers.sort((a, b) => b.overall_score - a.overall_score);
+    else if (sortBy === 'codechef') topPerformers.sort((a, b) => b.codechef_rating - a.codechef_rating);
+    else if (sortBy === 'codeforces') topPerformers.sort((a, b) => b.codeforces_rating - a.codeforces_rating);
+    else topPerformers.sort((a, b) => b.current_rating - a.current_rating);
+
+    // Top improvers
+    const topImprovers = [...enriched]
+      .filter(r => Number(r.lc_current_rating) > 1500)
+      .map(r => ({ ...r, rating_gain: Number(r.lc_current_rating) - 1500 }))
+      .sort((a, b) => b.rating_gain - a.rating_gain)
+      .slice(0, 20);
+
+    // Most consistent (highest attendance)
+    const mostConsistent = await db.query(
+      `SELECT u.id, u.name, u.roll_no as register_number,
+              u.leetcode_username, u.codechef_username, u.codeforces_username, u.hackerrank_username,
+              u.department,
+              (SELECT COUNT(*) FROM Registrations r JOIN Contests c ON r.contest_id = c.contest_id
+               WHERE r.user_id = u.id AND c.contest_status = 'Rated'
+                 AND c.start_time + INTERVAL IFNULL(c.duration,5400) SECOND <= NOW()) as total_contests,
+              (SELECT COUNT(*) FROM ParticipationLogs p JOIN Contests c ON p.contest_id = c.contest_id
+               WHERE p.user_id = u.id AND c.contest_status = 'Rated'
+                 AND c.start_time + INTERVAL IFNULL(c.duration,5400) SECOND <= NOW()) as present_count,
+              ROUND(IFNULL(
+                (SELECT COUNT(*) FROM ParticipationLogs p JOIN Contests c ON p.contest_id = c.contest_id
+                 WHERE p.user_id = u.id AND c.contest_status = 'Rated'
+                   AND c.start_time + INTERVAL IFNULL(c.duration,5400) SECOND <= NOW()) /
+                NULLIF((SELECT COUNT(*) FROM Registrations r JOIN Contests c ON r.contest_id = c.contest_id
+                 WHERE r.user_id = u.id AND c.contest_status = 'Rated'
+                   AND c.start_time + INTERVAL IFNULL(c.duration,5400) SECOND <= NOW()), 0) * 100, 0)
+              ) as attendance_percentage
+       FROM Users u
+       WHERE u.status = 'active'${filterSql}
+         AND (SELECT COUNT(*) FROM Registrations r JOIN Contests c ON r.contest_id = c.contest_id
+              WHERE r.user_id = u.id AND c.contest_status = 'Rated'
+                AND c.start_time + INTERVAL IFNULL(c.duration,5400) SECOND <= NOW()) >= 3
+       ORDER BY attendance_percentage DESC, present_count DESC
+       LIMIT 20`,
+      params
+    );
+
+    const coverageSummary = {
+      totalProfiles: enriched.length,
+      multiPlatformProfiles: enriched.filter(r => r.platform_count > 1).length,
+      averagePlatformCount: enriched.length > 0
+        ? (enriched.reduce((s, r) => s + r.platform_count, 0) / enriched.length).toFixed(1)
+        : '0.0'
+    };
+
+    return { topPerformers, topImprovers, mostConsistent, coverageSummary };
+  }, 8 * 60 * 1000);
+}
+
+/**
+ * Get department-level analytics with platform adoption percentages.
+ */
+async function getDepartmentAnalytics() {
+  return cache.getOrCompute(cache.KEYS.DEPARTMENT_ANALYTICS, async () => {
+    const stats = await db.query(
+      `SELECT u.department,
+              COUNT(DISTINCT u.id) as total_students,
+              SUM(CASE WHEN u.leetcode_username IS NOT NULL THEN 1 ELSE 0 END) as lc_count,
+              SUM(CASE WHEN u.codechef_username IS NOT NULL THEN 1 ELSE 0 END) as cc_count,
+              SUM(CASE WHEN u.codeforces_username IS NOT NULL THEN 1 ELSE 0 END) as cf_count,
+              SUM(CASE WHEN u.hackerrank_username IS NOT NULL THEN 1 ELSE 0 END) as hr_count,
+              IFNULL(ROUND(AVG(lp.current_rating)), 0) as avg_lc_rating,
+              IFNULL(ROUND(MAX(lp.highest_rating)), 0) as peak_lc_rating,
+              IFNULL(ROUND(AVG(cp.current_rating)), 0) as avg_cc_rating,
+              IFNULL(ROUND(MAX(cp.highest_rating)), 0) as peak_cc_rating,
+              IFNULL(ROUND(AVG(cfp.current_rating)), 0) as avg_cf_rating,
+              IFNULL(ROUND(MAX(cfp.highest_rating)), 0) as peak_cf_rating,
+              (SELECT COUNT(*) FROM AttendanceRecords ar JOIN Users u2 ON ar.user_id = u2.id
+               WHERE u2.department = u.department AND u2.status = 'active') as total_records,
+              (SELECT COUNT(*) FROM AttendanceRecords ar JOIN Users u2 ON ar.user_id = u2.id
+               WHERE u2.department = u.department AND u2.status = 'active' AND ar.attendance_status = 'PRESENT') as present_count,
+              (SELECT IFNULL(ROUND(AVG(ar.score), 2), 0) FROM AttendanceRecords ar JOIN Users u2 ON ar.user_id = u2.id
+               WHERE u2.department = u.department AND u2.status = 'active' AND ar.attendance_status = 'PRESENT') as average_problems_solved
+       FROM Users u
+       LEFT JOIN LeetCodeProfiles lp ON u.id = lp.user_id
+       LEFT JOIN CodeChefProfiles cp ON u.id = cp.user_id
+       LEFT JOIN CodeforcesProfiles cfp ON u.id = cfp.user_id
+       WHERE u.status = 'active'
+       GROUP BY u.department`
+    );
+
+    return stats.map(s => {
+      const n = Number(s.total_students) || 1;
+      const total = Number(s.total_records);
+      const present = Number(s.present_count);
+
+      const ratings = [s.avg_lc_rating, s.avg_cc_rating, s.avg_cf_rating].map(Number).filter(r => r > 0);
+      const averageRating = ratings.length > 0 ? Math.round(ratings.reduce((sum, val) => sum + val, 0) / ratings.length) : 0;
+      const peakRating = Math.max(
+        Number(s.peak_lc_rating || 0),
+        Number(s.peak_cc_rating || 0),
+        Number(s.peak_cf_rating || 0)
+      );
+
+      return {
+        ...s,
+        total_students: Number(s.total_students),
+        attendance_percentage: total > 0 ? Math.round((present / total) * 100) : 0,
+        average_rating: averageRating,
+        peak_rating: peakRating,
+        average_problems_solved: Number(s.average_problems_solved || 0),
+        lc_adoption_pct: Math.round((Number(s.lc_count) / n) * 100),
+        cc_adoption_pct: Math.round((Number(s.cc_count) / n) * 100),
+        cf_adoption_pct: Math.round((Number(s.cf_count) / n) * 100),
+        hr_adoption_pct: Math.round((Number(s.hr_count) / n) * 100),
+        overall_adoption_pct: Math.round(
+          ((Number(s.lc_count) + Number(s.cc_count) + Number(s.cf_count) + Number(s.hr_count)) / (n * 4)) * 100
+        )
+      };
+    });
+  }, 10 * 60 * 1000);
+}
+
+/**
+ * Get rating distribution histogram (all platforms combined).
+ * @returns {object} - { leetcode, codechef, codeforces, combined }
+ */
+async function getRatingDistribution() {
+  return cache.getOrCompute(cache.KEYS.RATING_DISTRIBUTION, async () => {
+    const bands = [
+      { label: '< 1200', min: 0, max: 1199 },
+      { label: '1200-1399', min: 1200, max: 1399 },
+      { label: '1400-1599', min: 1400, max: 1599 },
+      { label: '1600-1799', min: 1600, max: 1799 },
+      { label: '1800-1999', min: 1800, max: 1999 },
+      { label: '2000-2199', min: 2000, max: 2199 },
+      { label: '2200+', min: 2200, max: 9999 }
+    ];
+
+    const lcRatings = await db.query(
+      `SELECT lp.current_rating as rating FROM LeetCodeProfiles lp
+       JOIN Users u ON u.id = lp.user_id
+       WHERE u.status = 'active' AND lp.current_rating > 0`
+    );
+
+    const ccRatings = await db.query(
+      `SELECT cp.current_rating as rating FROM CodeChefProfiles cp
+       JOIN Users u ON u.id = cp.user_id
+       WHERE u.status = 'active' AND cp.current_rating > 0`
+    );
+
+    const cfRatings = await db.query(
+      `SELECT cfp.current_rating as rating FROM CodeforcesProfiles cfp
+       JOIN Users u ON u.id = cfp.user_id
+       WHERE u.status = 'active' AND cfp.current_rating > 0`
+    );
+
+    const buildDist = (rows) => bands.map(b => ({
+      label: b.label,
+      count: rows.filter(r => Number(r.rating) >= b.min && Number(r.rating) <= b.max).length
+    }));
+
+    const allRatings = [...lcRatings, ...ccRatings, ...cfRatings];
+
+    return {
+      leetcode: buildDist(lcRatings),
+      codechef: buildDist(ccRatings),
+      codeforces: buildDist(cfRatings),
+      combined: buildDist(allRatings),
+      bands: bands.map(b => b.label)
+    };
+  }, 15 * 60 * 1000);
+}
+
+/**
+ * Get unified student profile data (all platforms).
+ * @param {number} userId
+ */
+async function getUnifiedStudentProfile(userId) {
+  const [row] = await db.query(
+    `SELECT u.id, u.name, u.roll_no, u.department, u.section, u.academic_batch,
+            u.leetcode_username, u.codechef_username, u.codeforces_username, u.hackerrank_username,
+            u.academic_start_date, u.academic_end_date,
+            lp.current_rating as lc_rating, lp.highest_rating as lc_best_rating,
+            lp.global_ranking as lc_rank, lp.problems_solved as lc_solved,
+            lp.contest_history as lc_history,
+            lp.active_days as lc_active_days, lp.submission_calendar as lc_submission_calendar,
+            lp.badges as lc_badges, lp.language_stats as lc_language_stats,
+            lp.topic_stats as lc_topic_stats, lp.recent_submissions as lc_recent_submissions,
+            lp.easy_solved as lc_easy_solved, lp.medium_solved as lc_medium_solved,
+            lp.hard_solved as lc_hard_solved, lp.acceptance_rate as lc_acceptance_rate,
+            cp.current_rating as cc_rating, cp.highest_rating as cc_best_rating,
+            cp.global_ranking as cc_rank, cp.country_rank as cc_country_rank,
+            cp.problems_solved as cc_solved, cp.stars as cc_stars, cp.contest_history as cc_history,
+            cfp.current_rating as cf_rating, cfp.highest_rating as cf_best_rating,
+            cfp.\`rank\` as cf_rank, cfp.max_rank as cf_max_rank,
+            cfp.problems_solved as cf_solved, cfp.contest_history as cf_history,
+            hrp.problems_solved as hr_solved, hrp.stars as hr_stars,
+            hrp.badges as hr_badges, hrp.certificates as hr_certs
+     FROM Users u
+     LEFT JOIN LeetCodeProfiles lp ON u.id = lp.user_id
+     LEFT JOIN CodeChefProfiles cp ON u.id = cp.user_id
+     LEFT JOIN CodeforcesProfiles cfp ON u.id = cfp.user_id
+     LEFT JOIN HackerRankProfiles hrp ON u.id = hrp.user_id
+     WHERE u.id = ?`,
+    [userId]
+  );
+
+  if (!row) return null;
+
+  const lcHistory = parseContestHistory(row.lc_history).map(normalizeLeetCodeEntry).filter(e => e.attended);
+  const ccHistory = parseContestHistory(row.cc_history).map(normalizeCodeChefEntry).filter(e => e.attended);
+  const cfHistory = parseContestHistory(row.cf_history).map(normalizeCodeforcesEntry);
+
+  const profiles = {
+    leetcode: {
+      platform: 'leetcode',
+      verified: !!row.leetcode_username,
+      username: row.leetcode_username,
+      rating: Number(row.lc_rating) || null,
+      maxRating: Number(row.lc_best_rating) || null,
+      globalRanking: row.lc_rank || null,
+      problemsSolved: Number(row.lc_solved) || 0,
+      easySolved: Number(row.lc_easy_solved) || 0,
+      mediumSolved: Number(row.lc_medium_solved) || 0,
+      hardSolved: Number(row.lc_hard_solved) || 0,
+      acceptanceRate: row.lc_acceptance_rate !== null ? Number(row.lc_acceptance_rate) : null,
+      contests: lcHistory.length,
+      contestHistory: lcHistory,
+      activeDays: Number(row.lc_active_days) || 0,
+      submissionCalendar: (() => { try { return typeof row.lc_submission_calendar === 'string' ? JSON.parse(row.lc_submission_calendar) : (row.lc_submission_calendar || {}); } catch { return {}; } })(),
+      badges: (() => { try { return typeof row.lc_badges === 'string' ? JSON.parse(row.lc_badges) : (row.lc_badges || []); } catch { return []; } })(),
+      languageStats: (() => { try { return typeof row.lc_language_stats === 'string' ? JSON.parse(row.lc_language_stats) : (row.lc_language_stats || []); } catch { return []; } })(),
+      topicStats: (() => { try { return typeof row.lc_topic_stats === 'string' ? JSON.parse(row.lc_topic_stats) : (row.lc_topic_stats || []); } catch { return []; } })(),
+      recentSubmissions: (() => { try { return typeof row.lc_recent_submissions === 'string' ? JSON.parse(row.lc_recent_submissions) : (row.lc_recent_submissions || []); } catch { return []; } })()
+    },
+    codechef: {
+      platform: 'codechef',
+      verified: !!row.codechef_username,
+      username: row.codechef_username,
+      rating: Number(row.cc_rating) || null,
+      maxRating: Number(row.cc_best_rating) || null,
+      globalRanking: row.cc_rank || null,
+      countryRank: row.cc_country_rank || null,
+      stars: row.cc_stars || null,
+      problemsSolved: Number(row.cc_solved) || 0,
+      contests: ccHistory.length,
+      contestHistory: ccHistory
+    },
+    codeforces: {
+      platform: 'codeforces',
+      verified: !!row.codeforces_username,
+      username: row.codeforces_username,
+      rating: Number(row.cf_rating) || null,
+      maxRating: Number(row.cf_best_rating) || null,
+      rank: row.cf_rank || null,
+      maxRank: row.cf_max_rank || null,
+      problemsSolved: Number(row.cf_solved) || 0,
+      contests: cfHistory.length,
+      contestHistory: cfHistory
+    },
+    hackerrank: {
+      platform: 'hackerrank',
+      verified: !!row.hackerrank_username,
+      username: row.hackerrank_username,
+      problemsSolved: Number(row.hr_solved) || 0,
+      stars: Number(row.hr_stars) || 0,
+      badges: (() => { try { return typeof row.hr_badges === 'string' ? JSON.parse(row.hr_badges) : (row.hr_badges || []); } catch { return []; } })(),
+      certificates: (() => { try { return typeof row.hr_certs === 'string' ? JSON.parse(row.hr_certs) : (row.hr_certs || []); } catch { return []; } })()
+    }
+  };
+
+  const overallScore = computeOverallScore(
+    Number(row.lc_rating), Number(row.cc_rating), Number(row.cf_rating),
+    Number(row.lc_solved), Number(row.cc_solved), Number(row.cf_solved), Number(row.hr_solved)
+  );
+
+  const totalProblemsSolved = Object.values(profiles).reduce((s, p) => s + (p.problemsSolved || 0), 0);
+
+  return {
+    student: {
+      id: row.id,
+      name: row.name,
+      roll_no: row.roll_no,
+      department: row.department,
+      section: row.section,
+      academic_batch: row.academic_batch,
+      academic_start_date: row.academic_start_date,
+      academic_end_date: row.academic_end_date,
+      platforms: buildPlatformList(row)
+    },
+    profiles,
+    overallScore,
+    totalProblemsSolved
+  };
+}
+
+module.exports = {
+  getLeaderboards,
+  getDepartmentAnalytics,
+  getRatingDistribution,
+  getUnifiedStudentProfile,
+  buildPlatformList
+};

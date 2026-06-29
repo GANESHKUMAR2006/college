@@ -1,5 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend,
+  Filler
+} from 'chart.js';
+import { Line } from 'react-chartjs-2';
 import { 
   User, 
   Search,
@@ -17,8 +29,15 @@ import {
   List,
   Award,
   Clock,
-  Info
+  Info,
+  Sparkles,
+  Target,
+  TrendingUp,
+  Star
 } from 'lucide-react';
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler);
+
 
 function Profile() {
   // Student selection states
@@ -37,6 +56,9 @@ function Profile() {
 
   // Timeline records state
   const [dbHistory, setDbHistory] = useState([]);
+  const [unifiedProfile, setUnifiedProfile] = useState(null);
+  const [ratingHistory, setRatingHistory] = useState({});
+  const [ratingChartPlatform, setRatingChartPlatform] = useState('leetcode');
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState('');
@@ -100,6 +122,26 @@ function Profile() {
     fetchAvailableSections();
   }, [deptFilter, academicBatchFilter]);
 
+  const fetchUnifiedProfileData = async (targetId) => {
+    if (!targetId) { setUnifiedProfile(null); return; }
+    try {
+      const res = await axios.get(`/api/students/${targetId}/unified-profile`);
+      if (res.data.success) setUnifiedProfile(res.data.data);
+    } catch (err) {
+      console.error('Failed to fetch unified student profile:', err.message);
+    }
+  };
+
+  const fetchRatingHistory = async (targetId) => {
+    if (!targetId) { setRatingHistory({}); return; }
+    try {
+      const res = await axios.get(`/api/analytics/student/${targetId}/rating-history`);
+      if (res.data.success) setRatingHistory(res.data.ratingHistory || {});
+    } catch (err) {
+      console.error('Failed to fetch rating history:', err.message);
+    }
+  };
+
   // Fetch student timeline data
   const fetchStudentTimelineData = async (targetId, forceRefresh = false) => {
     if (!targetId) return;
@@ -125,11 +167,15 @@ function Profile() {
   useEffect(() => {
     if (selectedStudentId) {
       fetchStudentTimelineData(selectedStudentId);
+      fetchUnifiedProfileData(selectedStudentId);
+      fetchRatingHistory(selectedStudentId);
       const studentInfo = students.find(s => s.id === parseInt(selectedStudentId));
       if (studentInfo) setSelectedStudentInfo(studentInfo);
     } else {
       setSelectedStudentInfo(null);
       setDbHistory([]);
+      setUnifiedProfile(null);
+      setRatingHistory({});
     }
   }, [selectedStudentId, students]);
 
@@ -197,12 +243,76 @@ function Profile() {
   const missedCount = totalContestsCount - attendedCount;
   const attendanceRate = totalContestsCount > 0 ? parseFloat(((attendedCount / totalContestsCount) * 100).toFixed(1)) : 100.0;
 
-  // Manual trigger to force reload student's history from LeetCode
+  const platformOrder = ['leetcode', 'codechef', 'codeforces', 'hackerrank'];
+  const platformLabels = {
+    leetcode: 'LeetCode',
+    codechef: 'CodeChef',
+    codeforces: 'Codeforces',
+    hackerrank: 'HackerRank'
+  };
+
+  // Manual trigger to force reload student's history
   const handleSyncLeetCode = () => {
     if (selectedStudentId) {
       fetchStudentTimelineData(selectedStudentId, true);
+      fetchUnifiedProfileData(selectedStudentId);
+      fetchRatingHistory(selectedStudentId);
     }
   };
+
+  // Build rating chart data for the selected platform
+  const buildRatingChartData = (platform) => {
+    const history = ratingHistory[platform] || [];
+    if (!history.length) return null;
+    const colors = {
+      leetcode: { border: '#4f73ff', bg: 'rgba(79,115,255,0.1)' },
+      codechef: { border: '#f59e0b', bg: 'rgba(245,158,11,0.1)' },
+      codeforces: { border: '#ef4444', bg: 'rgba(239,68,68,0.1)' }
+    };
+    const c = colors[platform] || colors.leetcode;
+    return {
+      labels: history.map(h => {
+        const d = new Date(h.contest_date || h.date);
+        return isNaN(d) ? (h.contest_name || '') : d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+      }),
+      datasets: [{
+        fill: true,
+        label: `${platform.charAt(0).toUpperCase() + platform.slice(1)} Rating`,
+        data: history.map(h => Number(h.new_rating || h.rating || 0)),
+        borderColor: c.border,
+        backgroundColor: c.bg,
+        tension: 0.35,
+        borderWidth: 2,
+        pointRadius: history.length > 30 ? 0 : 3,
+        pointBackgroundColor: c.border
+      }]
+    };
+  };
+
+  const ratingChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: ctx => `Rating: ${ctx.parsed.y}`,
+          title: ([ctx]) => ctx.label
+        }
+      }
+    },
+    scales: {
+      y: { beginAtZero: false, grid: { color: 'rgba(200,200,200,0.1)' } },
+      x: { grid: { display: false }, ticks: { maxTicksLimit: 8, maxRotation: 0 } }
+    }
+  };
+
+  const platformChartColors = {
+    leetcode: 'text-primary-500',
+    codechef: 'text-amber-500',
+    codeforces: 'text-rose-500'
+  };
+
 
   return (
     <div className="space-y-6">
@@ -210,7 +320,7 @@ function Profile() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-800 dark:text-white">Contest Participation Timeline</h1>
-          <p className="text-sm text-slate-400">View and audit student contest attendance powered directly by actual LeetCode histories.</p>
+          <p className="text-sm text-slate-400">View and audit student contest attendance across the unified competitive programming platform stack.</p>
         </div>
         <div className="flex items-center gap-2 self-start sm:self-auto">
           <button
@@ -219,10 +329,137 @@ function Profile() {
             className="flex items-center gap-2 rounded-xl bg-primary-600 hover:bg-primary-700 active:scale-95 text-white font-bold text-xs px-4 py-2.5 shadow-md shadow-primary-500/10 transition-all disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
-            {syncing ? 'Syncing LeetCode...' : 'Sync LeetCode'}
+            {syncing ? 'Syncing Platform Data...' : 'Sync Platform Data'}
           </button>
         </div>
       </div>
+
+      {selectedStudentInfo && (
+        <div className="rounded-2xl border border-slate-200/60 dark:border-slate-800/80 bg-white dark:bg-slate-900 p-5 shadow-sm space-y-5">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <div>
+              <p className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400">Selected Student</p>
+              <h2 className="text-lg font-bold text-slate-800 dark:text-white">{selectedStudentInfo.name}</h2>
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                {selectedStudentInfo.roll_no} • {selectedStudentInfo.department} • Section {selectedStudentInfo.section} • {selectedStudentInfo.academic_batch}
+              </p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="rounded-xl border border-slate-200/60 bg-slate-50/60 dark:border-slate-800 dark:bg-slate-950/40 px-3 py-2.5">
+                <p className="text-[10px] uppercase tracking-wider text-slate-400">Overall Score</p>
+                <p className="text-lg font-extrabold text-slate-800 dark:text-white">{unifiedProfile?.overallScore ?? 0}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200/60 bg-slate-50/60 dark:border-slate-800 dark:bg-slate-950/40 px-3 py-2.5">
+                <p className="text-[10px] uppercase tracking-wider text-slate-400">Problems Solved</p>
+                <p className="text-lg font-extrabold text-slate-800 dark:text-white">{unifiedProfile?.totalProblemsSolved ?? 0}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200/60 bg-slate-50/60 dark:border-slate-800 dark:bg-slate-950/40 px-3 py-2.5">
+                <p className="text-[10px] uppercase tracking-wider text-slate-400">Active Platforms</p>
+                <p className="text-lg font-extrabold text-slate-800 dark:text-white">{Object.values(unifiedProfile?.profiles || {}).filter((p) => p?.verified).length}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            {platformOrder.map((platform) => {
+              const profile = unifiedProfile?.profiles?.[platform];
+              const username = selectedStudentInfo?.[`${platform}_username`];
+              const isVerified = profile?.verified;
+              return (
+                <div key={platform} className="rounded-xl border border-slate-200/60 bg-slate-50/60 dark:border-slate-800 dark:bg-slate-950/40 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <p className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">{platformLabels[platform]}</p>
+                      <p className="text-sm font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[100px]">{username || 'Not linked'}</p>
+                    </div>
+                    {isVerified ? (
+                      <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400">Verified</span>
+                    ) : (
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500 dark:bg-slate-800 dark:text-slate-400">Pending</span>
+                    )}
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-500 dark:text-slate-400">
+                    <div>
+                      <p className="font-semibold text-[10px] uppercase tracking-wide">Rating</p>
+                      <p className="font-bold text-slate-700 dark:text-slate-200">{profile?.rating ?? (profile?.currentRating ?? '—')}</p>
+                    </div>
+                    <div>
+                      <p className="font-semibold text-[10px] uppercase tracking-wide">Highest</p>
+                      <p className="font-bold text-slate-700 dark:text-slate-200">{profile?.maxRating ?? (profile?.highestRating ?? '—')}</p>
+                    </div>
+                    <div>
+                      <p className="font-semibold text-[10px] uppercase tracking-wide">Solved</p>
+                      <p className="font-bold text-slate-700 dark:text-slate-200">{profile?.problemsSolved ?? 0}</p>
+                    </div>
+                    <div>
+                      <p className="font-semibold text-[10px] uppercase tracking-wide">
+                        {platform === 'codechef' ? 'Stars' : platform === 'codeforces' ? 'Rank' : 'Global Rank'}
+                      </p>
+                      <p className="font-bold text-slate-700 dark:text-slate-200">
+                        {platform === 'codechef'
+                          ? (profile?.stars ? `${'⭐'.repeat(Math.min(profile.stars, 7))} (${profile.stars}★)` : '—')
+                          : platform === 'codeforces'
+                          ? (profile?.rank || profile?.cfRank || '—')
+                          : (profile?.globalRanking ? `#${Number(profile.globalRanking).toLocaleString()}` : '—')
+                        }
+                      </p>
+                    </div>
+                    {platform !== 'hackerrank' && (
+                      <div className="col-span-2">
+                        <p className="font-semibold text-[10px] uppercase tracking-wide">Contests</p>
+                        <p className="font-bold text-slate-700 dark:text-slate-200">
+                          {(ratingHistory[platform] || []).length > 0
+                            ? `${(ratingHistory[platform] || []).length} participated`
+                            : (profile?.totalContests ?? '—')}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Rating History Chart */}
+          {(ratingHistory.leetcode?.length > 0 || ratingHistory.codechef?.length > 0 || ratingHistory.codeforces?.length > 0) && (
+            <div className="rounded-xl border border-slate-200/60 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-sm">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <TrendingUp className="h-4 w-4 text-primary-500" />
+                  <h4 className="font-bold text-xs text-slate-800 dark:text-slate-200 uppercase tracking-wider">Rating History</h4>
+                </div>
+                <div className="flex gap-1">
+                  {['leetcode','codechef','codeforces'].filter(p => (ratingHistory[p] || []).length > 0).map(p => (
+                    <button
+                      key={p}
+                      onClick={() => setRatingChartPlatform(p)}
+                      className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wide transition-all ${
+                        ratingChartPlatform === p
+                          ? p === 'leetcode' ? 'bg-primary-500 text-white' : p === 'codechef' ? 'bg-amber-500 text-white' : 'bg-rose-500 text-white'
+                          : 'bg-slate-100 dark:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                      }`}
+                    >
+                      {p === 'leetcode' ? 'LC' : p === 'codechef' ? 'CC' : 'CF'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="h-48">
+                {buildRatingChartData(ratingChartPlatform) ? (
+                  <Line data={buildRatingChartData(ratingChartPlatform)} options={ratingChartOptions} />
+                ) : (
+                  <div className="h-full flex items-center justify-center text-slate-400 text-xs">
+                    No rating history available for {ratingChartPlatform}.
+                  </div>
+                )}
+              </div>
+              <p className="text-[10px] text-slate-400 mt-2 text-center">
+                {(ratingHistory[ratingChartPlatform] || []).length} contest{(ratingHistory[ratingChartPlatform] || []).length !== 1 ? 's' : ''} tracked
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Select & Filter Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -399,7 +636,7 @@ function Profile() {
                           {/* LeetCode stats */}
                           {isPresent && c.global_rank ? (
                             <div className="col-span-1 sm:col-span-2 bg-gradient-to-r from-primary-50/40 to-indigo-50/40 dark:from-slate-850/40 dark:to-slate-800/10 rounded-xl p-3 border border-slate-100/60 dark:border-slate-800 space-y-2">
-                              <span className="text-[10px] font-extrabold text-primary-600 dark:text-primary-400 uppercase tracking-widest block">LeetCode Performance Stats</span>
+                              <span className="text-[10px] font-extrabold text-primary-600 dark:text-primary-400 uppercase tracking-widest block">{(c.platform || 'LeetCode')} Performance Stats</span>
                               <div className="grid grid-cols-3 gap-2">
                                 <div>
                                   <span className="text-slate-450 block text-[9px] uppercase font-bold">Global Rank</span>

@@ -2,6 +2,24 @@ const cron = require('node-cron');
 const db = require('../config/db');
 const leetcode = require('./leetcode');
 const entranthub = require('./entranthub');
+const LeetCodeConnector = require('../services/connectors/LeetCodeConnector');
+const CodeChefConnector = require('../services/connectors/CodeChefConnector');
+const CodeforcesConnector = require('../services/connectors/CodeforcesConnector');
+const HackerRankConnector = require('../services/connectors/HackerRankConnector');
+
+const connectors = {
+  leetcode: LeetCodeConnector,
+  codechef: CodeChefConnector,
+  codeforces: CodeforcesConnector,
+  hackerrank: HackerRankConnector
+};
+
+const validationSvc = require('../services/dataValidationService');
+const matchingSvc = require('../services/contestMatchingService');
+const auditLogSvc = require('../services/auditLogService');
+const platformHealthSvc = require('../services/platformHealthService');
+const cache = require('../services/analyticsCacheService');
+const notificationSvc = require('../services/notificationService');
 
 // Sleep helper to prevent LeetCode rate limits
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -11,8 +29,8 @@ function formatDate(dateInput) {
   const d = new Date(dateInput);
   if (isNaN(d.getTime())) return '';
   const year = d.getFullYear();
-  const month = String(dateInput.getMonth() + 1).padStart(2, '0');
-  const day = String(dateInput.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 }
 
@@ -38,7 +56,7 @@ async function syncAllData() {
   try {
     // 1. Fetch all active students
     const users = await db.query(
-      "SELECT id, name, roll_no, department, section, leetcode_username, academic_start_date, academic_end_date FROM Users WHERE status = 'active'"
+      "SELECT id, name, roll_no, department, section, leetcode_username, codechef_username, codeforces_username, hackerrank_username, academic_start_date, academic_end_date FROM Users WHERE status = 'active'"
     );
 
     if (users.length === 0) {
@@ -95,54 +113,253 @@ async function syncAllData() {
 
     console.log(`[Sync] Newly Added Contests: ${newlyAdded}, Updated Contests: ${updatedContests}`);
 
-    // 3. Fetch LeetCode profile analytics and update LeetCodeProfiles
+    // 3. Fetch platform profile analytics and update each platform profile table
     let studentsProcessed = 0;
+    const masterContests = await db.query("SELECT contest_id, title, slug, start_time, contest_number, contest_type FROM Contests");
+
     for (const user of users) {
       try {
-        console.log(`[Sync] Fetching LeetCode analytics profile for user: ${user.leetcode_username}`);
-        const leetcodeData = await leetcode.getUserContestRankingAndHistory(user.leetcode_username);
-        
-        if (leetcodeData) {
-          const history = leetcodeData.userContestRankingHistory || [];
-          const ratings = history.map(h => h.rating).filter(r => r !== null && r !== undefined);
-          const highestRating = ratings.length > 0 ? Math.max(...ratings) : 1500.00;
-          const currentRating = leetcodeData.userContestRanking ? parseFloat(leetcodeData.userContestRanking.rating || 1500.00) : 1500.00;
-          const globalRanking = leetcodeData.userContestRanking ? leetcodeData.userContestRanking.globalRanking : null;
-          
-          // Problems solved (we can query dynamic question stats if available, otherwise default to 0)
-          const problemsSolved = 0; 
-          const historyJson = JSON.stringify(history);
+        for (const [platform, connector] of Object.entries(connectors)) {
+          const username = user[`${platform}_username`];
+          if (!username || !username.trim()) continue;
 
-          await db.query(`
-            INSERT INTO LeetCodeProfiles (user_id, current_rating, highest_rating, global_ranking, problems_solved, contest_history)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON DUPLICATE KEY UPDATE
-              current_rating = VALUES(current_rating),
-              highest_rating = VALUES(highest_rating),
-              global_ranking = VALUES(global_ranking),
-              problems_solved = VALUES(problems_solved),
-              contest_history = VALUES(contest_history)
-          `, [user.id, currentRating, highestRating, globalRanking, problemsSolved, historyJson]);
+          try {
+            await auditLogSvc.log(auditLogSvc.AUDIT_ACTIONS.SYNC_STARTED, {
+              actor: 'SYSTEM',
+              targetType: 'student_platform_sync',
+              targetId: `${user.id}:${platform}`,
+              details: { platform, username, name: user.name }
+            });
+
+            const rawData = await platformHealthSvc.trackCall(platform, () => connector.fetchProfile(username));
+
+            // Validate platform data
+            const valRes = await validationSvc.validateSyncData(platform, rawData, username);
+            if (!valRes.valid) {
+              console.warn(`[Sync] Validation failed for ${user.name} on ${platform}: ${valRes.error}`);
+              await auditLogSvc.log('VALIDATION_FAILURE', {
+                actor: 'SYSTEM',
+                targetType: 'student',
+                targetId: user.id,
+                details: { platform, username, error: valRes.error },
+                severity: 'WARNING'
+              });
+              continue;
+            }
+
+            // Normalize platform data
+            const profile = connector.normalize(rawData, username);
+
+            // Contest Matching & Auto-Attendance
+            if (Array.isArray(rawData.contestHistory)) {
+              for (const entry of rawData.contestHistory) {
+                const dbContest = await ensureContestInDb(platform, entry);
+                if (dbContest) {
+                  // Ensure registered
+                  await db.query(
+                    "INSERT IGNORE INTO Registrations (user_id, contest_id) VALUES (?, ?)",
+                    [user.id, dbContest.contest_id]
+                  );
+                  // Insert participation log
+                  await db.query(
+                    `INSERT INTO ParticipationLogs (user_id, contest_id, join_time, participation_status)
+                     VALUES (?, ?, CURRENT_TIMESTAMP, 'JOINED')
+                     ON DUPLICATE KEY UPDATE join_time = VALUES(join_time)`,
+                    [user.id, dbContest.contest_id]
+                  );
+
+                  // Extract detailed metrics
+                  let rank = null;
+                  let score = null;
+                  let oldRatingVal = null;
+                  let newRatingVal = null;
+                  let ratingChangeVal = null;
+
+                  if (platform === 'leetcode') {
+                    rank = entry.ranking || null;
+                    score = entry.problemsSolved || null;
+                    newRatingVal = entry.rating ? Math.round(entry.rating) : null;
+                    if (entry.rating && entry.oldRating) {
+                      oldRatingVal = Math.round(entry.oldRating);
+                      ratingChangeVal = newRatingVal - oldRatingVal;
+                    }
+                  } else if (platform === 'codechef') {
+                    rank = entry.rank || null;
+                    newRatingVal = entry.newRating || null;
+                    oldRatingVal = entry.oldRating || null;
+                    ratingChangeVal = entry.ratingChange || 0;
+                  } else if (platform === 'codeforces') {
+                    rank = entry.rank || null;
+                    newRatingVal = entry.newRating || null;
+                    oldRatingVal = entry.oldRating || null;
+                    ratingChangeVal = (entry.newRating && entry.oldRating) ? (entry.newRating - entry.oldRating) : 0;
+                  }
+
+                  // Write directly to AttendanceRecords
+                  await db.query(`
+                    INSERT INTO AttendanceRecords (user_id, contest_id, attendance_status, attendance_source, \`rank\`, score, rating_before, rating_after, rating_change, participated)
+                    VALUES (?, ?, 'PRESENT', 'AUTO', ?, ?, ?, ?, ?, 1)
+                    ON DUPLICATE KEY UPDATE
+                      attendance_status = 'PRESENT',
+                      attendance_source = 'AUTO',
+                      \`rank\` = VALUES(\`rank\`),
+                      score = VALUES(score),
+                      rating_before = VALUES(rating_before),
+                      rating_after = VALUES(rating_after),
+                      rating_change = VALUES(rating_change),
+                      participated = 1
+                  `, [user.id, dbContest.contest_id, rank, score, oldRatingVal, newRatingVal, ratingChangeVal]);
+                }
+              }
+            }
+
+            // Fetch current rating first to detect changes
+            let oldRating = null;
+            if (platform === 'leetcode') {
+              const rows = await db.query("SELECT current_rating FROM LeetCodeProfiles WHERE user_id = ?", [user.id]);
+              oldRating = rows[0]?.current_rating || 1500;
+            } else if (platform === 'codechef') {
+              const rows = await db.query("SELECT current_rating FROM CodeChefProfiles WHERE user_id = ?", [user.id]);
+              oldRating = rows[0]?.current_rating || 0;
+            } else if (platform === 'codeforces') {
+              const rows = await db.query("SELECT current_rating FROM CodeforcesProfiles WHERE user_id = ?", [user.id]);
+              oldRating = rows[0]?.current_rating || 0;
+            }
+
+            await auditLogSvc.log('DATABASE_WRITE', {
+              actor: 'SYSTEM',
+              targetType: 'student',
+              targetId: user.id,
+              details: { platform, username, action: 'SAVE_PROFILE_DATA' }
+            });
+
+            // Save normalized profile details to database
+            if (platform === 'leetcode') {
+              await db.query(`
+                INSERT INTO LeetCodeProfiles (user_id, current_rating, highest_rating, global_ranking, problems_solved, contest_history, active_days, submission_calendar, badges, language_stats, topic_stats, recent_submissions, easy_solved, medium_solved, hard_solved, acceptance_rate)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                  current_rating = VALUES(current_rating),
+                  highest_rating = VALUES(highest_rating),
+                  global_ranking = VALUES(global_ranking),
+                  problems_solved = VALUES(problems_solved),
+                  contest_history = VALUES(contest_history),
+                  active_days = VALUES(active_days),
+                  submission_calendar = VALUES(submission_calendar),
+                  badges = VALUES(badges),
+                  language_stats = VALUES(language_stats),
+                  topic_stats = VALUES(topic_stats),
+                  recent_submissions = VALUES(recent_submissions),
+                  easy_solved = VALUES(easy_solved),
+                  medium_solved = VALUES(medium_solved),
+                  hard_solved = VALUES(hard_solved),
+                  acceptance_rate = VALUES(acceptance_rate)
+              `, [
+                user.id,
+                profile.rating || 1500,
+                profile.maxRating || profile.rating || 1500,
+                profile.rank || null,
+                profile.problemsSolved || 0,
+                JSON.stringify(rawData.contestHistory || []),
+                profile.metadata?.activeDays || 0,
+                JSON.stringify(rawData.submissionCalendar || {}),
+                JSON.stringify(rawData.badges || []),
+                JSON.stringify(rawData.languageStats || []),
+                JSON.stringify(rawData.topicStats || []),
+                JSON.stringify(rawData.recentSubmissions || []),
+                profile.metadata?.easySolved || 0,
+                profile.metadata?.mediumSolved || 0,
+                profile.metadata?.hardSolved || 0,
+                rawData.acceptanceRate || null
+              ]);
+            }
+            if (platform === 'codechef') {
+              await db.query(`
+                INSERT INTO CodeChefProfiles (user_id, current_rating, highest_rating, global_ranking, country_rank, problems_solved, stars, contest_history)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                  current_rating = VALUES(current_rating),
+                  highest_rating = VALUES(highest_rating),
+                  global_ranking = VALUES(global_ranking),
+                  country_rank = VALUES(country_rank),
+                  problems_solved = VALUES(problems_solved),
+                  stars = VALUES(stars),
+                  contest_history = VALUES(contest_history)
+              `, [user.id, profile.rating || 0, profile.maxRating || profile.rating || 0, profile.rank || null, profile.countryRank || null, profile.problemsSolved || 0, profile.metadata?.stars || null, JSON.stringify(rawData.contestHistory || [])]);
+            }
+            if (platform === 'codeforces') {
+              await db.query(`
+                INSERT INTO CodeforcesProfiles (user_id, current_rating, highest_rating, \`rank\`, max_rank, problems_solved, contest_history)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                  current_rating = VALUES(current_rating),
+                  highest_rating = VALUES(highest_rating),
+                  \`rank\` = VALUES(\`rank\`),
+                  max_rank = VALUES(max_rank),
+                  problems_solved = VALUES(problems_solved),
+                  contest_history = VALUES(contest_history)
+              `, [user.id, profile.rating || 0, profile.maxRating || profile.rating || 0, profile.rank || null, profile.metadata?.maxRank || null, profile.problemsSolved || 0, JSON.stringify(rawData.contestHistory || [])]);
+            }
+            if (platform === 'hackerrank') {
+              await db.query(`
+                INSERT INTO HackerRankProfiles (user_id, badges, stars, certificates, problems_solved)
+                VALUES (?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                  badges = VALUES(badges),
+                  stars = VALUES(stars),
+                  certificates = VALUES(certificates),
+                  problems_solved = VALUES(problems_solved)
+              `, [user.id, JSON.stringify(profile.badges || []), profile.metadata?.stars || 0, JSON.stringify(profile.metadata?.certificates || []), profile.problemsSolved || 0]);
+            }
+
+            // Check and notify for significant rating changes
+            if (oldRating !== null && profile.rating) {
+              await notificationSvc.checkAndNotifyRatingChange(user.id, user.name, platform, oldRating, profile.rating);
+            }
+
+            // Audit Log profile verified and synced successfully
+            await auditLogSvc.log(auditLogSvc.AUDIT_ACTIONS.PROFILE_SYNCED, {
+              actor: 'SYSTEM',
+              targetType: 'student',
+              targetId: user.id,
+              details: { platform, username, result: 'SUCCESS' }
+            });
+
+          } catch (platformErr) {
+            console.warn(`[Sync] Platform ${platform} refresh failed for ${user.name}:`, platformErr.message);
+            await auditLogSvc.log(auditLogSvc.AUDIT_ACTIONS.SYNC_FAILED, {
+              actor: 'SYSTEM',
+              targetType: 'student',
+              targetId: user.id,
+              details: { platform, username, error: platformErr.message },
+              severity: 'ERROR'
+            });
+          }
         }
+
         studentsProcessed++;
         await sleep(600); // Prevent rate limits
       } catch (err) {
-        console.error(`[Sync] Failed to update LeetCodeProfile for user ${user.name}:`, err.message);
+        console.error(`[Sync] Failed to refresh platform profiles for user ${user.name}:`, err.message);
       }
     }
 
-    // 4. Finalize attendance for ended contests based on ParticipationLogs
-    console.log('[Sync] Finalizing attendance records for ended contests...');
+    // 4. Finalize attendance for ended/ongoing contests based on ParticipationLogs & Leaderboards
+    console.log('[Sync] Finalizing attendance records for ended/ongoing contests...');
     const endedContests = await db.query(
-      "SELECT contest_id, title, start_time FROM Contests WHERE start_time < NOW() AND contest_status != 'Cancelled'"
+      "SELECT contest_id, title, slug, start_time, platform FROM Contests WHERE start_time <= NOW() AND contest_status != 'Cancelled' AND source = 'ENTRANTHUB'"
     );
 
     let finalizedCount = 0;
     for (const contest of endedContests) {
       const contestStartTime = new Date(contest.start_time);
       
-      // Get all active users eligible for this contest date
+      // Get all active users eligible for this contest date and who have a handle for this platform
       const eligibleUsers = users.filter(u => {
+        const platformKey = contest.platform ? contest.platform.toLowerCase() : 'leetcode';
+        const handle = u[`${platformKey}_username`];
+        if (!handle || !handle.trim()) return false;
+
         const start = new Date(u.academic_start_date);
         const end = new Date(u.academic_end_date);
         start.setHours(0, 0, 0, 0);
@@ -150,24 +367,79 @@ async function syncAllData() {
         return contestStartTime >= start && contestStartTime <= end;
       });
 
+      // Fetch official participants from EntrantHub ranking/leaderboard
+      let entranthubParticipants = [];
+      try {
+        entranthubParticipants = await entranthub.fetchEntrantHubParticipants(contest.slug);
+        console.log(`[Sync] Fetched ${entranthubParticipants.length} official participants from EntrantHub for ${contest.slug}`);
+      } catch (err) {
+        console.warn(`[Sync] Failed to fetch EntrantHub participants for ${contest.slug}:`, err.message);
+      }
+
       for (const user of eligibleUsers) {
+        const platformKey = contest.platform ? contest.platform.toLowerCase() : 'leetcode';
+        const username = (user[`${platformKey}_username`] || '').trim().toLowerCase();
+
+        // Check if we have a local participation log
         const logCheck = await db.query(
           "SELECT id FROM ParticipationLogs WHERE user_id = ? AND contest_id = ?",
           [user.id, contest.contest_id]
         );
-        const attended = logCheck.length > 0;
+        let attended = logCheck.length > 0;
+
+        // Check if we already have rank / score in AttendanceRecords
+        const existingRecord = await db.query(
+          "SELECT `rank`, score FROM AttendanceRecords WHERE user_id = ? AND contest_id = ?",
+          [user.id, contest.contest_id]
+        );
+        let rank = existingRecord[0]?.rank || null;
+        let score = existingRecord[0]?.score || null;
+
+        // Auto-match student if found in the official rankings list
+        if (!attended && username && entranthubParticipants.includes(username)) {
+          attended = true;
+          // Ensure they are registered
+          await db.query(
+            "INSERT IGNORE INTO Registrations (user_id, contest_id) VALUES (?, ?)",
+            [user.id, contest.contest_id]
+          );
+          // Insert participation log
+          await db.query(
+            `INSERT INTO ParticipationLogs (user_id, contest_id, join_time, participation_status)
+             VALUES (?, ?, CURRENT_TIMESTAMP, 'JOINED')
+             ON DUPLICATE KEY UPDATE participation_status = 'JOINED'`,
+            [user.id, contest.contest_id]
+          );
+        }
+
         const status = attended ? 'PRESENT' : 'ABSENT';
 
         await db.query(`
-          INSERT INTO AttendanceRecords (user_id, contest_id, attendance_status, attendance_source)
-          VALUES (?, ?, ?, 'AUTO')
-          ON DUPLICATE KEY UPDATE attendance_status = VALUES(attendance_status)
-        `, [user.id, contest.contest_id, status]);
+          INSERT INTO AttendanceRecords (user_id, contest_id, attendance_status, attendance_source, \`rank\`, score, participated)
+          VALUES (?, ?, ?, 'AUTO', ?, ?, ?)
+          ON DUPLICATE KEY UPDATE 
+            attendance_status = VALUES(attendance_status),
+            attendance_source = 'AUTO',
+            \`rank\` = IFNULL(\`rank\`, VALUES(\`rank\`)),
+            score = IFNULL(score, VALUES(score)),
+            participated = VALUES(participated)
+        `, [user.id, contest.contest_id, status, rank, score, attended ? 1 : 0]);
       }
       finalizedCount++;
     }
 
     console.log(`[Sync] Finalized attendance for ${finalizedCount} completed contests.`);
+
+    // Update last_synced_at for all finalized contests
+    const allContestsToUpdate = await db.query(
+      "SELECT contest_id FROM Contests WHERE start_time <= NOW() AND contest_status != 'Cancelled'"
+    );
+    if (allContestsToUpdate.length > 0) {
+      const ids = allContestsToUpdate.map(c => c.contest_id);
+      await db.query(
+        `UPDATE Contests SET last_synced_at = CURRENT_TIMESTAMP WHERE contest_id IN (${ids.join(',')})`
+      );
+    }
 
     if (logId) {
       await db.query(
@@ -176,15 +448,17 @@ async function syncAllData() {
       );
     }
 
-    // Trigger notification
-    await db.query(
-      `INSERT INTO notifications (title, message, type)
-       VALUES (?, ?, 'new_contest')`,
-      [
-        `Synchronization Completed`,
-        `Successfully updated LeetCode analytics and finalized EnthraHub attendance for active students.`
-      ]
-    );
+    // Invalidate analytics cache after successful sync
+    cache.invalidateAll();
+    console.log('[Sync] Analytics cache invalidated after successful sync.');
+
+    // Send sync completion notification
+    const syncDuration = Math.round((Date.now() - startedAt.getTime()) / 1000);
+    await notificationSvc.notifySyncComplete({
+      contestsSynced: endedContests.length,
+      studentsProcessed,
+      duration: `${syncDuration}s`
+    });
 
     return {
       success: true,
@@ -251,15 +525,206 @@ function initScheduler() {
     try {
       await syncAllData();
       console.log('[Scheduler] Scheduled daily sync executed successfully.');
+
+      // Run daily alerts checks
+      console.log('[Scheduler] Executing daily alerts generation...');
+      await notificationSvc.generateMissingHandleAlerts();
+      await notificationSvc.generateUpcomingContestAlerts();
+      await notificationSvc.generateLowAttendanceAlerts(50);
     } catch (err) {
       console.error('[Scheduler] Scheduled daily sync failed:', err.message);
     }
   });
 }
 
+async function ensureContestInDb(platform, entry) {
+  let title, slug, startTime, duration, contestStatus, contestType, contestNumber;
+
+  if (platform.toLowerCase() === 'leetcode') {
+    title = entry.contest?.title || entry.contestName || 'Unknown LeetCode Contest';
+    slug = entry.contest?.titleSlug || title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const startSec = entry.contest?.startTime || (entry.contestDate ? Math.floor(new Date(entry.contestDate).getTime() / 1000) : Math.floor(Date.now() / 1000));
+    startTime = new Date(startSec * 1000);
+    duration = entry.contest?.duration || 5400;
+    contestStatus = (slug.includes('biweekly-contest-126') || slug.includes('biweekly-contest-127')) ? 'Unrated' : 'Rated';
+    contestType = slug.includes('biweekly') ? 'Biweekly' : 'Weekly';
+    const match = slug.match(/contest-(\d+)/);
+    contestNumber = match ? parseInt(match[1], 10) : 0;
+  } else if (platform.toLowerCase() === 'codechef') {
+    title = entry.contestName || 'Unknown CodeChef Contest';
+    slug = 'codechef-' + title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    startTime = entry.contestDate ? new Date(entry.contestDate) : new Date();
+    duration = 10800; // CodeChef Starters are usually 3 hours
+    contestStatus = 'Rated';
+    contestType = 'Weekly';
+    const match = title.match(/Starters\s+(\d+)/i) || slug.match(/starters-(\d+)/i);
+    contestNumber = match ? parseInt(match[1], 10) : 0;
+  } else if (platform.toLowerCase() === 'codeforces') {
+    title = entry.contestName || `Codeforces Contest ${entry.contestId}`;
+    slug = 'codeforces-' + (entry.contestId || title.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
+    const startSec = entry.ratingUpdateTimeSeconds || (entry.contestDate ? Math.floor(new Date(entry.contestDate).getTime() / 1000) : Math.floor(Date.now() / 1000));
+    startTime = new Date(startSec * 1000);
+    duration = 7200; // Codeforces rounds are usually 2 hours
+    contestStatus = 'Rated';
+    contestType = 'Weekly';
+    const match = title.match(/Round\s+(\d+)/i) || title.match(/(\d+)/);
+    contestNumber = match ? parseInt(match[1], 10) : 0;
+  }
+
+  // Check if slug already exists
+  const existing = await db.query("SELECT contest_id, title, start_time FROM Contests WHERE slug = ?", [slug]);
+  if (existing.length > 0) {
+    return existing[0];
+  }
+
+  // Insert new contest
+  const result = await db.query(`
+    INSERT INTO Contests (title, slug, contest_type, contest_number, start_time, duration, contest_status, platform, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [title, slug, contestType, contestNumber, startTime, duration, contestStatus, platform === 'leetcode' ? 'LeetCode' : platform === 'codechef' ? 'CodeChef' : 'Codeforces', 'SYNC']);
+
+  return {
+    contest_id: result.insertId,
+    title,
+    slug,
+    start_time: startTime
+  };
+}
+
+async function syncStudentProfiles(userId) {
+  console.log(`[Sync] Triggering manual live synchronization for user ID: ${userId}...`);
+  
+  const [user] = await db.query(
+    "SELECT id, name, leetcode_username, codechef_username, codeforces_username, hackerrank_username FROM Users WHERE id = ?",
+    [userId]
+  );
+  if (!user) {
+    throw new Error('User not found');
+  }
+
+  for (const [platform, connector] of Object.entries(connectors)) {
+    const username = user[`${platform}_username`];
+    if (!username || !username.trim()) continue;
+
+    console.log(`[Sync] Fetching ${platform} for ${user.name} (username: ${username})...`);
+    try {
+      const rawData = await platformHealthSvc.trackCall(platform, () => connector.fetchProfile(username));
+
+      // Validate
+      const valRes = await validationSvc.validateSyncData(platform, rawData, username);
+      if (!valRes.valid) {
+        console.warn(`[Sync] Validation failed for ${user.name} on ${platform}: ${valRes.error}`);
+        continue;
+      }
+
+      // Normalize
+      const profile = connector.normalize(rawData, username);
+
+      // Save to database
+      if (platform === 'leetcode') {
+        await db.query(`
+          INSERT INTO LeetCodeProfiles (user_id, current_rating, highest_rating, global_ranking, problems_solved, contest_history, active_days, submission_calendar, badges, language_stats, topic_stats, recent_submissions, easy_solved, medium_solved, hard_solved, acceptance_rate)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE
+            current_rating = VALUES(current_rating),
+            highest_rating = VALUES(highest_rating),
+            global_ranking = VALUES(global_ranking),
+            problems_solved = VALUES(problems_solved),
+            contest_history = VALUES(contest_history),
+            active_days = VALUES(active_days),
+            submission_calendar = VALUES(submission_calendar),
+            badges = VALUES(badges),
+            language_stats = VALUES(language_stats),
+            topic_stats = VALUES(topic_stats),
+            recent_submissions = VALUES(recent_submissions),
+            easy_solved = VALUES(easy_solved),
+            medium_solved = VALUES(medium_solved),
+            hard_solved = VALUES(hard_solved),
+            acceptance_rate = VALUES(acceptance_rate)
+        `, [
+          user.id,
+          profile.rating || 1500,
+          profile.maxRating || profile.rating || 1500,
+          profile.rank || null,
+          profile.problemsSolved || 0,
+          JSON.stringify(rawData.contestHistory || []),
+          profile.metadata?.activeDays || 0,
+          JSON.stringify(rawData.submissionCalendar || {}),
+          JSON.stringify(rawData.badges || []),
+          JSON.stringify(rawData.languageStats || []),
+          JSON.stringify(rawData.topicStats || []),
+          JSON.stringify(rawData.recentSubmissions || []),
+          profile.metadata?.easySolved || 0,
+          profile.metadata?.mediumSolved || 0,
+          profile.metadata?.hardSolved || 0,
+          rawData.acceptanceRate || null
+        ]);
+      }
+      if (platform === 'codechef') {
+        await db.query(`
+          INSERT INTO CodeChefProfiles (user_id, current_rating, highest_rating, global_ranking, country_rank, problems_solved, stars, contest_history)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE
+            current_rating = VALUES(current_rating),
+            highest_rating = VALUES(highest_rating),
+            global_ranking = VALUES(global_ranking),
+            country_rank = VALUES(country_rank),
+            problems_solved = VALUES(problems_solved),
+            stars = VALUES(stars),
+            contest_history = VALUES(contest_history)
+        `, [user.id, profile.rating || 0, profile.maxRating || profile.rating || 0, profile.rank || null, profile.countryRank || null, profile.problemsSolved || 0, profile.metadata?.stars || null, JSON.stringify(rawData.contestHistory || [])]);
+      }
+      if (platform === 'codeforces') {
+        await db.query(`
+          INSERT INTO CodeforcesProfiles (user_id, current_rating, highest_rating, \`rank\`, max_rank, problems_solved, contest_history)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE
+            current_rating = VALUES(current_rating),
+            highest_rating = VALUES(highest_rating),
+            \`rank\` = VALUES(\`rank\`),
+            max_rank = VALUES(max_rank),
+            problems_solved = VALUES(problems_solved),
+            contest_history = VALUES(contest_history)
+        `, [user.id, profile.rating || 0, profile.maxRating || profile.rating || 0, profile.rank || null, profile.metadata?.maxRank || null, profile.problemsSolved || 0, JSON.stringify(rawData.contestHistory || [])]);
+      }
+      if (platform === 'hackerrank') {
+        await db.query(`
+          INSERT INTO HackerRankProfiles (user_id, badges, stars, certificates, problems_solved)
+          VALUES (?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE
+            badges = VALUES(badges),
+            stars = VALUES(stars),
+            certificates = VALUES(certificates),
+            problems_solved = VALUES(problems_solved)
+        `, [user.id, JSON.stringify(profile.badges || []), profile.metadata?.stars || 0, JSON.stringify(profile.metadata?.certificates || []), profile.problemsSolved || 0]);
+      }
+
+      await auditLogSvc.log(auditLogSvc.AUDIT_ACTIONS.PROFILE_SYNCED, {
+        actor: 'SYSTEM',
+        targetType: 'student',
+        targetId: user.id,
+        details: { platform, username, result: 'SUCCESS', trigger: 'MANUAL' }
+      });
+      console.log(`[Sync] Platform ${platform} sync success for ${user.name}`);
+    } catch (platformErr) {
+      console.warn(`[Sync] Platform ${platform} refresh failed for ${user.name}:`, platformErr.message);
+      await auditLogSvc.log(auditLogSvc.AUDIT_ACTIONS.SYNC_FAILED, {
+        actor: 'SYSTEM',
+        targetType: 'student',
+        targetId: user.id,
+        details: { platform, username, error: platformErr.message, trigger: 'MANUAL' },
+        severity: 'ERROR'
+      });
+    }
+  }
+}
+
 module.exports = {
   syncAllData,
   seedMasterContests,
-  initScheduler
+  initScheduler,
+  formatDate,
+  ensureContestInDb,
+  syncStudentProfiles
 };
 

@@ -29,6 +29,7 @@ import {
   CalendarDays,
   ChevronLeft,
   ChevronRight as ChevronRightIcon,
+  RefreshCw,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import {
@@ -42,63 +43,104 @@ import {
   Cell,
   Area,
   AreaChart,
-  Line,
-  LineChart,
 } from 'recharts';
 
 /* ─────────────────────────── helpers ─────────────────────────── */
-const BATCH_OPTIONS = ['2023-2027', '2024-2028', '2025-2029', '2026-2030'];
 
-const getContestTiming = (contestDate) => {
-  const cDate = new Date(contestDate).getTime();
-  const now = Date.now();
-  const duration = 1.5 * 60 * 60 * 1000;
-  if (cDate > now) return 'upcoming';
-  if (now - cDate < duration) return 'active';
+function getContestTiming(dateStr, durationSeconds = 5400) {
+  const now = new Date();
+  const startTime = new Date(dateStr);
+  if (isNaN(startTime.getTime())) return 'past';
+  const endTime = new Date(startTime.getTime() + durationSeconds * 1000);
+  if (startTime > now) return 'upcoming';
+  if (startTime <= now && endTime > now) return 'active';
   return 'past';
-};
+}
 
-/* ── Stat Card ── */
-function StatCard({ icon: Icon, label, value, sub, colorClass, bgClass, trend }) {
-  return (
-    <div className={`relative overflow-hidden rounded-2xl border border-slate-200/60 dark:border-slate-800/80 bg-white dark:bg-slate-900 p-4 shadow-sm hover:shadow-md transition-all duration-200 group`}>
-      <div className="flex items-start justify-between">
-        <div className={`h-10 w-10 rounded-xl ${bgClass} flex items-center justify-center shrink-0 transition-transform group-hover:scale-110 duration-200`}>
-          <Icon className={`h-5 w-5 ${colorClass}`} />
-        </div>
-        {trend !== undefined && (
-          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full flex items-center gap-0.5 ${trend >= 0 ? 'text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30' : 'text-rose-500 bg-rose-50 dark:bg-rose-950/30'}`}>
-            <ArrowUpRight className={`h-3 w-3 ${trend < 0 ? 'rotate-180' : ''}`} />
-            {Math.abs(trend)}%
-          </span>
-        )}
-      </div>
-      <div className="mt-3">
-        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{label}</p>
-        <p className={`text-2xl font-black mt-0.5 ${colorClass}`}>{value}</p>
-        {sub && <p className="text-[10px] text-slate-400 font-medium mt-0.5">{sub}</p>}
-      </div>
-      <div className={`absolute -bottom-3 -right-3 h-14 w-14 rounded-full ${bgClass} opacity-20`} />
-    </div>
-  );
+function parseDateOnly(dateInput) {
+  if (!dateInput) return new Date();
+  const d = new Date(dateInput);
+  return isNaN(d.getTime()) ? new Date() : d;
 }
 
 /* ── Badge helpers ── */
 function TypeBadge({ type }) {
+  const t = type ? type.toLowerCase() : '';
+  
+  if (t === 'weekly') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400 border border-blue-100 dark:border-blue-900/30">
+        <Zap className="h-3 w-3" /> Weekly
+      </span>
+    );
+  }
+  if (t === 'biweekly') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide bg-violet-50 text-violet-700 dark:bg-violet-950/30 dark:text-violet-400 border border-violet-100 dark:border-violet-900/30">
+        <Calendar className="h-3 w-3" /> Biweekly
+      </span>
+    );
+  }
+  if (t === 'starters') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide bg-amber-50 text-amber-800 dark:bg-amber-950/30 dark:text-amber-450 border border-amber-100 dark:border-amber-900/30">
+        <Zap className="h-3 w-3" /> Starters
+      </span>
+    );
+  }
+  if (t === 'cook-off') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide bg-orange-50 text-orange-700 dark:bg-orange-950/30 dark:text-orange-450 border border-orange-100 dark:border-orange-900/30">
+        <Calendar className="h-3 w-3" /> Cook-Off
+      </span>
+    );
+  }
+  if (t === 'lunchtime') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-450 border border-emerald-100 dark:border-emerald-900/30">
+        <Zap className="h-3 w-3" /> Lunchtime
+      </span>
+    );
+  }
+  if (t === 'long challenge') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900/30">
+        <Calendar className="h-3 w-3" /> Long Challenge
+      </span>
+    );
+  }
+  if (t.includes('div')) {
+    const formatted = type.toUpperCase().replace('ROUND', '').trim();
+    return (
+      <span className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide bg-rose-50 text-rose-700 dark:bg-rose-950/30 dark:text-rose-400 border border-rose-100 dark:border-rose-900/30">
+        <Zap className="h-3 w-3" /> {formatted}
+      </span>
+    );
+  }
+  if (t === 'educational' || t.includes('edu')) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide bg-sky-50 text-sky-700 dark:bg-sky-950/30 dark:text-sky-400 border border-sky-100 dark:border-sky-900/30">
+        <Calendar className="h-3 w-3" /> Educational
+      </span>
+    );
+  }
+  if (t === 'global') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide bg-teal-50 text-teal-700 dark:bg-teal-950/30 dark:text-teal-400 border border-teal-100 dark:border-teal-900/30">
+        <Zap className="h-3 w-3" /> Global
+      </span>
+    );
+  }
+
   return (
-    <span className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide ${
-      type === 'weekly'
-        ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400'
-        : 'bg-violet-50 text-violet-700 dark:bg-violet-950/30 dark:text-violet-400'
-    }`}>
-      {type === 'weekly' ? <Zap className="h-3 w-3" /> : <Calendar className="h-3 w-3" />}
-      {type === 'weekly' ? 'Weekly' : 'Biweekly'}
+    <span className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide bg-slate-50 text-slate-700 dark:bg-slate-850 dark:text-slate-450 border border-slate-200 dark:border-slate-800">
+      {type}
     </span>
   );
 }
 
 function AttendanceBadge({ contest }) {
-  const timing = getContestTiming(contest.date);
+  const timing = getContestTiming(contest.date, contest.duration || 5400);
   const isOngoing = timing === 'active';
   const isUnrated = contest.status?.toLowerCase() === 'unrated' || contest.contest_status?.toLowerCase() === 'unrated' || contest.attendance_status === 'UNRATED';
   const isPresent = contest.is_joined || contest.attendance_status === 'PRESENT';
@@ -114,18 +156,18 @@ function AttendanceBadge({ contest }) {
 
   if (isUnrated) {
     return (
-      <span className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[10px] font-extrabold bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400 border border-amber-100 dark:border-amber-900/30">
-        <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-        🟡 Unrated
+      <span className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[10px] font-extrabold bg-slate-100 text-slate-550 dark:bg-slate-800/50 dark:text-slate-400 border border-slate-200/60 dark:border-slate-700/60">
+        <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
+        ⚪ Unrated
       </span>
     );
   }
 
   if (isPresent) {
     return (
-      <span className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[10px] font-extrabold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/30">
+      <span className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[10px] font-extrabold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-450 border border-emerald-100 dark:border-emerald-900/30">
         <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-        🟢 Present
+        ✓ Present
       </span>
     );
   }
@@ -173,11 +215,29 @@ const CustomTooltip = ({ active, payload, label }) => {
   );
 };
 
+function StatCard({ icon: Icon, label, value, sub, colorClass, bgClass }) {
+  return (
+    <div className={`rounded-2xl border border-slate-200/60 dark:border-slate-800/80 bg-white dark:bg-slate-900 p-4 shadow-sm flex items-center gap-3.5 hover:shadow-md transition-all duration-200`}>
+      <div className={`p-2.5 rounded-xl ${bgClass} shrink-0`}>
+        <Icon className={`h-5 w-5 ${colorClass}`} />
+      </div>
+      <div>
+        <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest block">{label}</span>
+        <span className="text-lg font-black text-slate-850 dark:text-white mt-0.5 block">{value}</span>
+        <span className="text-[10px] text-slate-400 mt-0.5 block">{sub}</span>
+      </div>
+    </div>
+  );
+}
+
 /* ════════════════════════════════════════════════════════════════
    MAIN COMPONENT
 ════════════════════════════════════════════════════════════════ */
 function Contests() {
-  /* ── state ── */
+  /* ── platform selector state ── */
+  const [activePlatform, setActivePlatform] = useState('leetcode');
+
+  /* ── standard states ── */
   const [contests, setContests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filterType, setFilterType] = useState('');
@@ -192,13 +252,20 @@ function Contests() {
   const [selectedContest, setSelectedContest] = useState(null);
 
   const [students, setStudents] = useState([]);
+  const [availableBatches, setAvailableBatches] = useState([]);
   const [selectedStudentId, setSelectedStudentId] = useState('all');
   const [studentSearch, setStudentSearch] = useState('');
 
-  const [contestReports, setContestReports] = useState([]);
+  /* ── pre-calculated platform analytics ── */
+  const [metrics, setMetrics] = useState({ eligible: 0, attended: 0, missed: 0, rate: 0.0, ongoing: 0 });
+  const [monthlyTrendData, setMonthlyTrendData] = useState([]);
+  const [semesterAnalyticsData, setSemesterAnalyticsData] = useState([]);
+  const [batchComparisonData, setBatchComparisonData] = useState([]);
   const [studentSummaries, setStudentSummaries] = useState([]);
-  const [activeAnalyticsTab, setActiveAnalyticsTab] = useState('trend');
+  const [platformRanking, setPlatformRanking] = useState(null);
+
   const [showAnalyticsPanel, setShowAnalyticsPanel] = useState(true);
+  const [activeAnalyticsTab, setActiveAnalyticsTab] = useState('trend');
 
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
@@ -212,104 +279,241 @@ function Contests() {
   const [overrideStatus, setOverrideStatus] = useState('present');
   const [overrideRemarks, setOverrideRemarks] = useState('');
   const [savingOverride, setSavingOverride] = useState(false);
+  const [syncingPlatform, setSyncingPlatform] = useState(false);
 
-  const [formData, setFormData] = useState({ contestId: '', name: '', date: '', type: 'weekly' });
+  const [formData, setFormData] = useState({ contestId: '', name: '', date: '', type: 'weekly', platform: 'leetcode' });
   const [formLoading, setFormLoading] = useState(false);
   const [formError, setFormError] = useState('');
+
   const selectedStudentInfo = students.find(s => s.id === parseInt(selectedStudentId));
 
-  /* ── fetch students ── */
+  /* ── platform style configurations ── */
+  const platformStyles = {
+    leetcode: {
+      text: 'text-orange-500 dark:text-orange-400',
+      textAccent: 'text-orange-600 dark:text-orange-400',
+      bg: 'bg-orange-500',
+      bgMuted: 'bg-orange-50 dark:bg-orange-950/20',
+      bgHover: 'hover:bg-orange-600',
+      border: 'border-orange-200 dark:border-orange-900/30 focus:border-orange-400',
+      borderMuted: 'border-orange-100 dark:border-orange-900/30',
+      shadow: 'shadow-orange-500/20',
+      gradient: 'from-orange-500 to-amber-500',
+      gradientButton: 'from-orange-600 to-orange-500 hover:from-orange-500 hover:to-orange-400',
+      badge: 'bg-orange-50 text-orange-700 dark:bg-orange-950/30 dark:text-orange-450 border-orange-100 dark:border-orange-900/30',
+      chartColor: '#f97316'
+    },
+    codechef: {
+      text: 'text-amber-800 dark:text-amber-400',
+      textAccent: 'text-amber-800 dark:text-amber-400',
+      bg: 'bg-amber-800',
+      bgMuted: 'bg-amber-50 dark:bg-amber-950/20',
+      bgHover: 'hover:bg-amber-900',
+      border: 'border-amber-200 dark:border-amber-700 focus:border-amber-500',
+      borderMuted: 'border-amber-100 dark:border-amber-800/30',
+      shadow: 'shadow-amber-800/20',
+      gradient: 'from-amber-800 to-amber-600',
+      gradientButton: 'from-amber-800 to-amber-700 hover:from-amber-700 hover:to-amber-600',
+      badge: 'bg-amber-50 text-amber-800 dark:bg-amber-950/30 dark:text-amber-450 border-amber-100 dark:border-amber-900/30',
+      chartColor: '#b45309'
+    },
+    codeforces: {
+      text: 'text-rose-600 dark:text-rose-400',
+      textAccent: 'text-rose-600 dark:text-rose-400',
+      bg: 'bg-rose-600',
+      bgMuted: 'bg-rose-50 dark:bg-rose-950/20',
+      bgHover: 'hover:bg-rose-700',
+      border: 'border-rose-200 dark:border-rose-700 focus:border-rose-500',
+      borderMuted: 'border-rose-100 dark:border-rose-800/30',
+      shadow: 'shadow-rose-500/20',
+      gradient: 'from-rose-600 to-red-500',
+      gradientButton: 'from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400',
+      badge: 'bg-rose-50 text-rose-700 dark:bg-rose-950/30 dark:text-rose-450 border-rose-100 dark:border-rose-900/30',
+      chartColor: '#e11d48'
+    }
+  };
+
+  const style = platformStyles[activePlatform] || platformStyles.leetcode;
+
+  /* ── fetch active students and batches (on mount) ── */
   useEffect(() => {
     axios.get('/api/students?status=active')
       .then(res => { if (res.data.success) setStudents(res.data.data || []); })
       .catch(() => {});
+
+    axios.get('/api/contestmaster/batches')
+      .then(res => { setAvailableBatches(res.data || []); })
+      .catch(() => {});
   }, []);
 
-  /* ── fetch contests ── */
-  const fetchContests = async () => {
+  /* ── fetch platform data ── */
+  const fetchPlatformData = async () => {
     setLoading(true);
+    setError('');
     try {
-      let url = '/api/contests';
-      let params = { type: filterType };
-      
-      if (selectedStudentId !== 'all') {
-        url = `/api/attendance/student/${selectedStudentId}`;
-        params = {};
-      } else {
-        params.userId = '';
-      }
-      
-      const res = await axios.get(url, { params });
-      if (res.data.success) {
-        if (selectedStudentId !== 'all') {
-          // Map student attendance records to contests shape
-          const mapped = (res.data.data || []).map(c => ({
-            id: c.contest_id,
-            contest_id: c.contest_slug,
-            name: c.contest_name,
-            date: c.contest_date,
-            type: c.contest_type ? c.contest_type.toLowerCase() : 'weekly',
-            status: c.contest_status ? c.contest_status.toUpperCase() : 'RATED',
-            is_registered: !!c.is_registered,
-            is_joined: c.attendance_status === 'PRESENT',
-            eligibility_status: c.eligibility_status,
-            attendance_status: c.attendance_status,
-            problems_solved: c.problems_solved,
-            total_problems: c.total_problems,
-            rating: c.rating,
-            rating_change: c.rating_change,
-            global_rank: c.global_rank
-          }));
-          
-          // Apply type filter on frontend
-          const filtered = filterType 
-            ? mapped.filter(c => c.type === filterType.toLowerCase())
-            : mapped;
-            
-          setContests(filtered);
-        } else {
-          setContests(res.data.data || []);
+      const res = await axios.get(`/api/contestmaster/${activePlatform}`, {
+        params: {
+          studentId: selectedStudentId,
+          batch: selectedBatch,
+          type: filterType,
+          status: filterStatus
         }
+      });
+      if (res.data.success) {
+        setContests(res.data.contests || []);
+        setMetrics(res.data.metrics || { eligible: 0, attended: 0, missed: 0, rate: 0.0, ongoing: 0 });
+        setMonthlyTrendData(res.data.monthlyTrendData || []);
+        setSemesterAnalyticsData(res.data.semesterAnalyticsData || []);
+        setBatchComparisonData(res.data.batchComparisonData || []);
+        setStudentSummaries(res.data.studentSummaries || []);
+        setPlatformRanking(res.data.platformRanking || null);
       }
-    } catch {
-      setError('Failed to fetch contests.');
+    } catch (err) {
+      console.error('Error fetching platform master data:', err);
+      setError(`Failed to fetch ${activePlatform} analytics dashboard data.`);
     } finally {
       setLoading(false);
     }
   };
 
-  /* ── fetch analytics ── */
-  const fetchAnalyticsReports = async () => {
+  useEffect(() => {
+    fetchPlatformData();
+  }, [activePlatform, selectedStudentId, selectedBatch, filterType, filterStatus]);
+
+  const handleSyncPlatformData = async () => {
+    setSyncingPlatform(true);
+    setSuccessMsg('');
+    setError('');
     try {
-      const [r1, r2] = await Promise.all([
-        axios.get('/api/reports/contests', { params: { batch: selectedBatch } }),
-        axios.get('/api/reports/students'),
-      ]);
-      if (r1.data.success) setContestReports(r1.data.data || []);
-      if (r2.data.success) setStudentSummaries(r2.data.data || []);
-    } catch {}
+      const res = await axios.post('/api/contests/sync');
+      if (res.data.success) {
+        setSuccessMsg('Synchronization job started in background.');
+        await fetchPlatformData();
+        setTimeout(() => setSuccessMsg(''), 3000);
+      }
+    } catch (err) {
+      setError('Failed to trigger platform synchronization.');
+    } finally {
+      setSyncingPlatform(false);
+    }
   };
 
-  useEffect(() => { fetchContests(); }, [filterType, selectedStudentId]);
-  useEffect(() => { fetchAnalyticsReports(); }, [selectedBatch]);
-  useEffect(() => { setCurrentPage(1); setExpandedContestId(null); }, [selectedStudentId, selectedBatch, filterType, filterStatus]);
+  useEffect(() => {
+    setCurrentPage(1);
+    setExpandedContestId(null);
+  }, [selectedStudentId, selectedBatch, filterType, filterStatus, activePlatform]);
+
+  /* ── derived date limits for frontend filtering (fallback) ── */
+  const batchStudentsCount = useMemo(() => {
+    const bs = students.filter(s => selectedBatch ? s.academic_batch === selectedBatch : true);
+    return bs.length || 1;
+  }, [students, selectedBatch]);
+
+  const batchDates = useMemo(() => {
+    if (!selectedBatch) return null;
+    const bs = students.filter(s => s.academic_batch === selectedBatch);
+    if (!bs.length) return null;
+    const starts = bs.map(s => new Date(s.academic_start_date).getTime()).filter(t => !isNaN(t));
+    const ends = bs.map(s => new Date(s.academic_end_date).getTime()).filter(t => !isNaN(t));
+    return {
+      start: starts.length ? new Date(Math.min(...starts)) : null,
+      end: ends.length ? new Date(Math.max(...ends)) : null,
+    };
+  }, [selectedBatch, students]);
+
+  // Apply batch date boundaries on the frontend contests list
+  const filteredContestsByBatch = useMemo(() => {
+    let list = contests;
+    if (selectedBatch && batchDates) {
+      list = list.filter(c => {
+        const t = new Date(c.date).getTime();
+        const ok1 = batchDates.start ? t >= batchDates.start.getTime() : true;
+        const ok2 = batchDates.end ? t <= batchDates.end.getTime() : true;
+        return ok1 && ok2;
+      });
+    }
+    return list;
+  }, [contests, selectedBatch, batchDates]);
+
+  // Filter students dropdown list based on search and batch
+  const filteredStudents = useMemo(() =>
+    students.filter(s => {
+      const matchSearch = s.name.toLowerCase().includes(studentSearch.toLowerCase()) || s.roll_no.includes(studentSearch);
+      const matchBatch = selectedBatch ? s.academic_batch === selectedBatch : true;
+      return matchSearch && matchBatch;
+    }), [students, studentSearch, selectedBatch]);
+
+  const recentActivity = useMemo(() =>
+    filteredContestsByBatch.filter(c => getContestTiming(c.date, c.duration || 5400) === 'past').slice(0, 5),
+    [filteredContestsByBatch]);
+
+  // Paginate list
+  const paginatedContests = useMemo(() =>
+    filteredContestsByBatch.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage),
+    [filteredContestsByBatch, currentPage]);
+
+  const totalPages = Math.ceil(filteredContestsByBatch.length / itemsPerPage);
+
+  /* ── platform category breakdowns (Right Sidebar) ── */
+  const platformBreakdowns = useMemo(() => {
+    const eligibleRecords = contests.filter(c => c.eligibility_status === 'Eligible' && (c.status === 'attended' || c.status === 'not attended'));
+    
+    const computeBreakdown = (filterFn, label) => {
+      const records = eligibleRecords.filter(filterFn);
+      const eligible = records.length;
+      let attended = 0;
+      if (selectedStudentId !== 'all') {
+        attended = records.filter(c => c.is_joined || c.attendance_status === 'PRESENT').length;
+      } else {
+        const totalAttended = records.reduce((acc, c) => acc + (c.attendance_count || 0), 0);
+        attended = Math.round(totalAttended / batchStudentsCount);
+      }
+      const missed = Math.max(0, eligible - attended);
+      const rate = eligible > 0 ? parseFloat(((attended / eligible) * 100).toFixed(1)) : 100.0;
+      return { label, eligible, attended, missed, rate };
+    };
+
+    if (activePlatform === 'leetcode') {
+      return [
+        computeBreakdown(c => c.type === 'weekly', 'Weekly Contests'),
+        computeBreakdown(c => c.type === 'biweekly', 'Biweekly Contests')
+      ];
+    } else if (activePlatform === 'codechef') {
+      return [
+        computeBreakdown(c => c.type === 'starters', 'Starters'),
+        computeBreakdown(c => c.type === 'cook-off', 'Cook-Off'),
+        computeBreakdown(c => c.type === 'lunchtime', 'Lunchtime'),
+        computeBreakdown(c => c.type === 'long challenge', 'Long Challenge')
+      ];
+    } else if (activePlatform === 'codeforces') {
+      return [
+        computeBreakdown(c => c.type === 'div1', 'Div 1 Rounds'),
+        computeBreakdown(c => c.type === 'div2', 'Div 2 Rounds'),
+        computeBreakdown(c => c.type === 'div3', 'Div 3 Rounds'),
+        computeBreakdown(c => c.type === 'div4', 'Div 4 Rounds'),
+        computeBreakdown(c => c.type === 'educational', 'Educational Rounds'),
+        computeBreakdown(c => c.type === 'global', 'Global Rounds')
+      ];
+    }
+    return [];
+  }, [contests, activePlatform, selectedStudentId, batchStudentsCount]);
 
   /* ── form handlers ── */
   const handleInputChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
 
   const openAddModal = () => {
-    setModalMode('add');
-    setFormData({ contestId: '', name: '', date: new Date().toISOString().split('T')[0], type: 'weekly' });
+    setFormData({ contestId: '', name: '', date: new Date().toISOString().split('T')[0], type: 'weekly', platform: activePlatform });
     setFormError('');
     setIsOpenModal(true);
+    setModalMode('add');
   };
 
   const openEditModal = (c) => {
-    setModalMode('edit');
     setSelectedContest(c);
-    setFormData({ contestId: c.contest_id, name: c.name, date: new Date(c.date).toISOString().split('T')[0], type: c.type });
+    setFormData({ contestId: c.contest_id, name: c.name, date: new Date(c.date).toISOString().split('T')[0], type: c.type, platform: activePlatform });
     setFormError('');
     setIsOpenModal(true);
+    setModalMode('edit');
   };
 
   const handleFormSubmit = async (e) => {
@@ -323,8 +527,7 @@ function Contests() {
       if (res.data.success) {
         setIsOpenModal(false);
         setSuccessMsg(modalMode === 'add' ? 'Contest created successfully.' : 'Contest updated successfully.');
-        fetchContests();
-        fetchAnalyticsReports();
+        fetchPlatformData();
         setTimeout(() => setSuccessMsg(''), 3000);
       }
     } catch (err) {
@@ -340,8 +543,7 @@ function Contests() {
       const res = await axios.delete(`/api/contests/${id}`);
       if (res.data.success) {
         setSuccessMsg('Contest deleted.');
-        fetchContests();
-        fetchAnalyticsReports();
+        fetchPlatformData();
         setTimeout(() => setSuccessMsg(''), 3000);
       }
     } catch {
@@ -352,14 +554,14 @@ function Contests() {
   const handleRegister = async (contestId) => {
     try {
       const res = await axios.post('/api/contests/register', { userId: selectedStudentId, contestId });
-      if (res.data.success) { setSuccessMsg('Registered!'); fetchContests(); setTimeout(() => setSuccessMsg(''), 3000); }
+      if (res.data.success) { setSuccessMsg('Registered!'); fetchPlatformData(); setTimeout(() => setSuccessMsg(''), 3000); }
     } catch { setError('Failed to register.'); }
   };
 
   const handleJoin = async (contestId) => {
     try {
       const res = await axios.post('/api/contests/join', { userId: selectedStudentId, contestId });
-      if (res.data.success) { setSuccessMsg('Joined & marked present!'); fetchContests(); setTimeout(() => setSuccessMsg(''), 3000); }
+      if (res.data.success) { setSuccessMsg('Joined & marked present!'); fetchPlatformData(); setTimeout(() => setSuccessMsg(''), 3000); }
     } catch { setError('Failed to join.'); }
   };
 
@@ -384,7 +586,7 @@ function Contests() {
       if (res.data.success) {
         setShowOverrideModal(false);
         setSuccessMsg(`Override saved for ${overrideContest.name}.`);
-        fetchContests();
+        fetchPlatformData();
         setTimeout(() => setSuccessMsg(''), 3000);
       }
     } catch { setError('Failed to save override.'); }
@@ -396,377 +598,64 @@ function Contests() {
     setLoadingParticipants(p => ({ ...p, [contestId]: true }));
     try {
       const res = await axios.get(`/api/attendance/contest/${contestId}`);
-      if (res.data.success) setContestParticipants(p => ({ ...p, [contestId]: res.data.data || [] }));
+      if (res.data.success) {
+        setContestParticipants(p => ({
+          ...p,
+          [contestId]: {
+            attended: res.data.attended || [],
+            missed: res.data.missed || [],
+            raw: res.data.data || []
+          }
+        }));
+      }
     } catch {}
     finally { setLoadingParticipants(p => ({ ...p, [contestId]: false })); }
-  };
-
-  /* ── derived data ── */
-  const filteredStudents = useMemo(() =>
-    students.filter(s => {
-      const matchSearch = s.name.toLowerCase().includes(studentSearch.toLowerCase()) || s.roll_no.includes(studentSearch);
-      const matchBatch = selectedBatch ? s.academic_batch === selectedBatch : true;
-      return matchSearch && matchBatch;
-    }), [students, studentSearch, selectedBatch]);
-
-  const batchDates = useMemo(() => {
-    if (!selectedBatch) return null;
-    const bs = students.filter(s => s.academic_batch === selectedBatch);
-    if (!bs.length) return null;
-    const starts = bs.map(s => new Date(s.academic_start_date).getTime()).filter(t => !isNaN(t));
-    const ends = bs.map(s => new Date(s.academic_end_date).getTime()).filter(t => !isNaN(t));
-    return {
-      start: starts.length ? new Date(Math.min(...starts)) : null,
-      end: ends.length ? new Date(Math.max(...ends)) : null,
-    };
-  }, [selectedBatch, students]);
-
-  const getContestStatusHelper = (c) => {
-    if (selectedStudentId !== 'all' && c.attendance_status) {
-      return c.attendance_status.toLowerCase();
-    }
-    const timing = getContestTiming(c.date);
-    if (timing === 'active') return 'ongoing';
-    if (c.status?.toLowerCase() === 'unrated' || c.contest_status?.toLowerCase() === 'unrated') return 'unrated';
-    return 'rated';
-  };
-
-  const filteredContestsByBatch = useMemo(() => {
-    let list = contests;
-    if (selectedBatch && batchDates) {
-      list = list.filter(c => {
-        const t = new Date(c.date).getTime();
-        const ok1 = batchDates.start ? t >= batchDates.start.getTime() : true;
-        const ok2 = batchDates.end ? t <= batchDates.end.getTime() : true;
-        return ok1 && ok2;
-      });
-    }
-    if (filterStatus) {
-      list = list.filter(c => {
-        const status = getContestStatusHelper(c);
-        if (filterStatus === 'present') return status === 'present' || status === 'attended';
-        if (filterStatus === 'absent') return status === 'absent' || status === 'not attended';
-        return status === filterStatus;
-      });
-    }
-    return list;
-  }, [contests, selectedBatch, batchDates, filterStatus, selectedStudentId]);
-
-  const recentActivity = useMemo(() =>
-    filteredContestsByBatch.filter(c => getContestTiming(c.date) === 'past').slice(0, 5),
-    [filteredContestsByBatch]);
-
-  const batchStudentsCount = useMemo(() => {
-    const bs = students.filter(s => selectedBatch ? s.academic_batch === selectedBatch : true);
-    return bs.length || 1;
-  }, [students, selectedBatch]);
-
-  const eligibleContests = useMemo(() => {
-    if (selectedStudentId !== 'all') {
-      return contests.filter(c => c.eligibility_status === 'Eligible');
-    }
-    
-    let start = null;
-    let end = new Date();
-    
-    if (selectedBatch && batchDates) {
-      if (batchDates.start) start = batchDates.start;
-      if (batchDates.end) {
-        if (batchDates.end < end) end = batchDates.end;
-      }
-    } else {
-      start = new Date('2023-07-01');
-    }
-    
-    return contests.filter(c => {
-      const cDate = new Date(c.date);
-      if (isNaN(cDate.getTime())) return false;
-      const okStart = start ? cDate >= start : true;
-      const okEnd = cDate <= end;
-      return okStart && okEnd;
-    });
-  }, [contests, selectedStudentId, selectedBatch, batchDates]);
-
-  const stats = useMemo(() => {
-    const getLocalStatus = (c) => {
-      if (selectedStudentId !== 'all' && c.attendance_status) {
-        return c.attendance_status; // 'PRESENT', 'ABSENT', 'UNRATED', 'ONGOING', 'NOT_APPLICABLE'
-      }
-      const timing = getContestTiming(c.date);
-      if (timing === 'active') return 'ONGOING';
-      if (c.status?.toLowerCase() === 'unrated' || c.contest_status?.toLowerCase() === 'unrated') return 'UNRATED';
-      if (timing === 'upcoming') return 'NOT_APPLICABLE';
-      return 'RATED';
-    };
-
-    const enriched = eligibleContests.map(c => ({
-      ...c,
-      local_status: getLocalStatus(c)
-    }));
-
-    const ratedRecords = enriched.filter(c => c.local_status === 'RATED' || c.local_status === 'PRESENT' || c.local_status === 'ABSENT');
-    const ratedTotal = ratedRecords.length;
-    const unrated = enriched.filter(c => c.local_status === 'UNRATED').length;
-    const ongoing = enriched.filter(c => c.local_status === 'ONGOING').length;
-
-    let attended = 0;
-    let label = '';
-    
-    if (selectedStudentId !== 'all') {
-      attended = ratedRecords.filter(c => c.local_status === 'PRESENT').length;
-      label = 'Student-specific stats';
-    } else {
-      const totalAttended = ratedRecords.reduce((acc, c) => acc + (c.attendance_count || 0), 0);
-      attended = Math.round(totalAttended / batchStudentsCount);
-      label = selectedBatch ? `${selectedBatch} batch averages` : 'System-wide averages';
-    }
-    
-    const missed = Math.max(0, ratedTotal - attended);
-    const percentage = ratedTotal > 0 ? parseFloat(((attended / ratedTotal) * 100).toFixed(1)) : 100.0;
-    
-    return {
-      total: ratedTotal,
-      attended,
-      missed,
-      percentage,
-      unrated,
-      ongoing,
-      label
-    };
-  }, [eligibleContests, selectedStudentId, selectedBatch, batchStudentsCount]);
-
-  const weeklyEligible = useMemo(() => eligibleContests.filter(c => c.type === 'weekly'), [eligibleContests]);
-  const biweeklyEligible = useMemo(() => eligibleContests.filter(c => c.type === 'biweekly'), [eligibleContests]);
-
-  const weeklyStats = useMemo(() => {
-    const eligibleRecords = weeklyEligible.filter(c => {
-      const timing = getContestTiming(c.date);
-      const isUnrated = c.status?.toLowerCase() === 'unrated' || c.contest_status?.toLowerCase() === 'unrated' || c.attendance_status === 'UNRATED';
-      return timing !== 'active' && timing !== 'upcoming' && !isUnrated;
-    });
-    const eligible = eligibleRecords.length;
-    let attended = 0;
-    if (selectedStudentId !== 'all') {
-      attended = eligibleRecords.filter(c => c.is_joined || c.attendance_status === 'PRESENT').length;
-    } else {
-      const totalAttended = eligibleRecords.reduce((acc, c) => acc + (c.attendance_count || 0), 0);
-      attended = Math.round(totalAttended / batchStudentsCount);
-    }
-    const missed = Math.max(0, eligible - attended);
-    const rate = eligible > 0 ? parseFloat(((attended / eligible) * 100).toFixed(1)) : 100.0;
-    return { eligible, attended, missed, rate };
-  }, [weeklyEligible, selectedStudentId, batchStudentsCount]);
-
-  const biweeklyStats = useMemo(() => {
-    const eligibleRecords = biweeklyEligible.filter(c => {
-      const timing = getContestTiming(c.date);
-      const isUnrated = c.status?.toLowerCase() === 'unrated' || c.contest_status?.toLowerCase() === 'unrated' || c.attendance_status === 'UNRATED';
-      return timing !== 'active' && timing !== 'upcoming' && !isUnrated;
-    });
-    const eligible = eligibleRecords.length;
-    let attended = 0;
-    if (selectedStudentId !== 'all') {
-      attended = eligibleRecords.filter(c => c.is_joined || c.attendance_status === 'PRESENT').length;
-    } else {
-      const totalAttended = eligibleRecords.reduce((acc, c) => acc + (c.attendance_count || 0), 0);
-      attended = Math.round(totalAttended / batchStudentsCount);
-    }
-    const missed = Math.max(0, eligible - attended);
-    const rate = eligible > 0 ? parseFloat(((attended / eligible) * 100).toFixed(1)) : 100.0;
-    return { eligible, attended, missed, rate };
-  }, [biweeklyEligible, selectedStudentId, batchStudentsCount]);
-
-  const monthlyTrendData = useMemo(() => {
-    const monthlyGroups = {};
-    
-    eligibleContests.forEach(item => {
-      const d = new Date(item.date);
-      if (isNaN(d.getTime())) return;
-      
-      const year = d.getFullYear();
-      const monthVal = d.getMonth();
-      const monthKey = `${year}-${String(monthVal + 1).padStart(2, '0')}`;
-      
-      if (!monthlyGroups[monthKey]) {
-        monthlyGroups[monthKey] = {
-          key: monthKey,
-          monthName: d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
-          present: 0,
-          total: 0
-        };
-      }
-      
-      const group = monthlyGroups[monthKey];
-      
-      if (selectedStudentId !== 'all') {
-        group.total++;
-        if (item.is_joined) {
-          group.present++;
-        }
-      } else {
-        group.present += (item.attendance_count || 0);
-        group.total += batchStudentsCount;
-      }
-    });
-    
-    const result = Object.values(monthlyGroups)
-      .sort((a, b) => a.key.localeCompare(b.key))
-      .map(g => ({
-        name: g.monthName,
-        rate: g.total > 0 ? Math.round((g.present / g.total) * 100) : 0,
-        present: g.present,
-        total: g.total
-      }));
-      
-    return result.slice(-24);
-  }, [eligibleContests, selectedStudentId, batchStudentsCount]);
-
-  const semesterAnalyticsData = useMemo(() => {
-    let startDate = null;
-    if (selectedStudentId !== 'all' && selectedStudentInfo?.academic_start_date) {
-      startDate = new Date(selectedStudentInfo.academic_start_date);
-    } else if (selectedBatch) {
-      const startYear = parseInt(selectedBatch.split('-')[0], 10);
-      startDate = !isNaN(startYear) ? new Date(`${startYear}-07-01`) : new Date('2024-07-01');
-    } else {
-      startDate = new Date('2023-07-01');
-    }
-    
-    const semestersData = {};
-    for (let i = 1; i <= 8; i++) {
-      semestersData[i] = {
-        semester: `Semester ${i}`,
-        semesterNum: i,
-        total: 0,
-        present: 0,
-        absent: 0
-      };
-    }
-    
-    eligibleContests.forEach(item => {
-      const d = new Date(item.date);
-      if (isNaN(d.getTime())) return;
-      
-      const startYear = startDate.getFullYear();
-      const startMonth = startDate.getMonth();
-      const itemYear = d.getFullYear();
-      const itemMonth = d.getMonth();
-      
-      const monthsDiff = (itemYear - startYear) * 12 + (itemMonth - startMonth);
-      if (monthsDiff < 0) return;
-      
-      const sem = Math.floor(monthsDiff / 6) + 1;
-      if (sem < 1 || sem > 8) return;
-      
-      const group = semestersData[sem];
-      
-      if (selectedStudentId !== 'all') {
-        group.total++;
-        if (item.is_joined) {
-          group.present++;
-        } else {
-          group.absent++;
-        }
-      } else {
-        group.present += (item.attendance_count || 0);
-        group.total += batchStudentsCount;
-        group.absent += Math.max(0, batchStudentsCount - (item.attendance_count || 0));
-      }
-    });
-    
-    return Object.values(semestersData).map(s => {
-      let total = s.total;
-      let present = s.present;
-      let absent = s.absent;
-      
-      if (selectedStudentId === 'all') {
-        total = Math.round(s.total / batchStudentsCount);
-        present = Math.round(s.present / batchStudentsCount);
-        absent = Math.round(s.absent / batchStudentsCount);
-      }
-      
-      const rate = total > 0 ? parseFloat(((present / total) * 100).toFixed(1)) : 0;
-      
-      return {
-        semester: s.semester,
-        semesterNum: s.semesterNum,
-        total,
-        present,
-        absent,
-        rate
-      };
-    });
-  }, [eligibleContests, selectedStudentId, selectedStudentInfo, selectedBatch, batchStudentsCount]);
-
-  const batchComparisonData = useMemo(() => {
-    const targetBatches = ['2023-2027', '2024-2028', '2025-2029'];
-    return targetBatches.map(b => {
-      const batchStudents = studentSummaries.filter(s => s.academic_year === b);
-      const totalParticipants = batchStudents.length;
-      
-      const avgAttendance = totalParticipants > 0
-        ? parseFloat((batchStudents.reduce((acc, s) => acc + (s.attendance_percentage || 0), 0) / totalParticipants).toFixed(1))
-        : 0;
-        
-      const avgRating = totalParticipants > 0
-        ? Math.round(batchStudents.reduce((acc, s) => acc + (s.current_rating || 1500), 0) / totalParticipants)
-        : 1500;
-        
-      return {
-        name: b,
-        attendance: avgAttendance,
-        rating: avgRating,
-        participants: totalParticipants
-      };
-    });
-  }, [studentSummaries]);
-
-  const paginatedContests = useMemo(() => {
-    const start = (currentPage - 1) * itemsPerPage;
-    return filteredContestsByBatch.slice(start, start + itemsPerPage);
-  }, [filteredContestsByBatch, currentPage]);
-
-  const totalPages = Math.ceil(filteredContestsByBatch.length / itemsPerPage);
-
-  /* ── export ── */
-  const handleExportReport = () => {
-    let exportData, fileName;
-    if (selectedStudentId === 'all') {
-      exportData = filteredContestsByBatch.map(c => ({
-        'Contest Name': c.name,
-        'Type': c.type === 'weekly' ? 'Weekly' : 'Biweekly',
-        'Date': new Date(c.date).toLocaleDateString(),
-        'Registrations': c.registration_count,
-        'Attended': c.attendance_count,
-        'Rate': c.registration_count > 0 ? `${Math.round((c.attendance_count / c.registration_count) * 100)}%` : '0%',
-      }));
-      fileName = selectedBatch ? `${selectedBatch}_contests` : 'all_contests';
-    } else {
-      const name = students.find(s => s.id === parseInt(selectedStudentId))?.name || 'student';
-      exportData = filteredContestsByBatch.map(c => {
-        const timing = getContestTiming(c.date);
-        let status = 'Did Not Register';
-        if (c.is_joined) status = 'Attended';
-        else if (c.is_registered) status = timing === 'upcoming' ? 'Registered' : 'Missed';
-        return {
-          'Contest Name': c.name,
-          'Type': c.type === 'weekly' ? 'Weekly' : 'Biweekly',
-          'Date': new Date(c.date).toLocaleDateString(),
-          'Status': status,
-        };
-      });
-      fileName = `${name.replace(/\s+/g, '_')}_contest_history`;
-    }
-    const ws = XLSX.utils.json_to_sheet(exportData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'ContestReport');
-    XLSX.writeFile(wb, `${fileName}_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
   const handleToggleExpand = (id) => {
     if (expandedContestId === id) { setExpandedContestId(null); return; }
     setExpandedContestId(id);
-    if (selectedStudentId === 'all') fetchParticipants(id);
+    const item = contests.find(c => c.id === id);
+    if (selectedStudentId === 'all' && item) fetchParticipants(id);
+  };
+
+  /* ── Export Report ── */
+  const handleExportReport = () => {
+    const pLabel = activePlatform === 'leetcode' ? 'LeetCode' : activePlatform === 'codechef' ? 'CodeChef' : 'Codeforces';
+    const fileName = `${pLabel}_ContestMaster_Report`;
+    
+    let exportData = [];
+    if (selectedStudentId === 'all') {
+      exportData = filteredContestsByBatch.map(c => ({
+        'Contest Name': c.name,
+        'Platform': pLabel,
+        'Type': c.type,
+        'Date': new Date(c.date).toLocaleDateString('en-GB'),
+        'Registrations': c.registration_count,
+        'Attended Count': c.attendance_count,
+        'Attendance Rate %': c.registration_count > 0 ? Math.round((c.attendance_count / c.registration_count) * 100) : 0
+      }));
+    } else {
+      exportData = filteredContestsByBatch.map(c => ({
+        'Student Name': selectedStudentInfo?.name,
+        'Register No': selectedStudentInfo?.roll_no,
+        'Contest Name': c.name,
+        'Platform': pLabel,
+        'Type': c.type,
+        'Date': new Date(c.date).toLocaleDateString('en-GB'),
+        'Eligibility': c.eligibility_status,
+        'Attendance Status': c.attendance_status,
+        'Global Rank': c.global_rank || 'N/A',
+        'Solved': c.problems_solved !== null ? c.problems_solved : 'N/A',
+        'Rating': c.rating || 'N/A',
+        'Rating Change': c.rating_change || '0'
+      }));
+    }
+
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'PlatformContestReport');
+    XLSX.writeFile(wb, `${fileName}_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
   /* ════════════════ RENDER ════════════════ */
@@ -777,13 +666,13 @@ function Contests() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <div className="flex items-center gap-2 mb-0.5">
-            <div className="h-8 w-8 rounded-xl bg-gradient-to-br from-primary-500 to-violet-600 flex items-center justify-center shadow-md shadow-primary-500/20">
+            <div className={`h-8 w-8 rounded-xl bg-gradient-to-br ${style.gradient} flex items-center justify-center shadow-md ${style.shadow}`}>
               <Trophy className="h-4 w-4 text-white" />
             </div>
-            <h1 className="text-xl font-black text-slate-800 dark:text-white tracking-tight">Contest Management Dashboard</h1>
+            <h1 className="text-xl font-black text-slate-800 dark:text-white tracking-tight">Contest Master</h1>
           </div>
           <p className="text-xs text-slate-400 ml-10">
-            Track college-wide LeetCode contest participation · Analyze batch trends · Generate reports
+            Track college-wide {activePlatform === 'leetcode' ? 'LeetCode' : activePlatform === 'codechef' ? 'CodeChef' : 'Codeforces'} contest participation · Analyze batch trends · Generate reports
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -791,7 +680,7 @@ function Contests() {
             onClick={() => setAdminMode(p => !p)}
             className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all border ${
               adminMode
-                ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-800/40 shadow-inner'
+                ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-450 dark:border-amber-800/40 shadow-inner'
                 : 'bg-white text-slate-600 border-slate-200 dark:bg-slate-900 dark:text-slate-400 dark:border-slate-800 shadow-sm'
             }`}
           >
@@ -801,12 +690,44 @@ function Contests() {
           {adminMode && (
             <button
               onClick={openAddModal}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-primary-600 to-primary-500 hover:from-primary-500 hover:to-primary-400 text-white text-xs font-bold transition-all shadow-md shadow-primary-500/20"
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r ${style.gradientButton} text-white text-xs font-bold transition-all shadow-md ${style.shadow}`}
             >
               <Plus className="h-3.5 w-3.5" /> Create Contest
             </button>
           )}
         </div>
+      </div>
+
+      {/* ── PLATFORM SELECTOR ── */}
+      <div className="flex rounded-2xl bg-white dark:bg-slate-900 p-1.5 border border-slate-200/60 dark:border-slate-850 shadow-sm gap-2">
+        {[
+          { id: 'leetcode', label: 'LeetCode', icon: '🟠' },
+          { id: 'codechef', label: 'CodeChef', icon: '🟤' },
+          { id: 'codeforces', label: 'Codeforces', icon: '🔴' }
+        ].map(platform => {
+          const isActive = activePlatform === platform.id;
+          let btnClass = "";
+          if (isActive) {
+            if (platform.id === 'leetcode') btnClass = "bg-orange-500 text-white shadow-md shadow-orange-500/20";
+            else if (platform.id === 'codechef') btnClass = "bg-amber-800 text-white shadow-md shadow-amber-800/20";
+            else if (platform.id === 'codeforces') btnClass = "bg-rose-600 text-white shadow-md shadow-rose-500/20";
+          } else {
+            btnClass = "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50";
+          }
+          return (
+            <button
+              key={platform.id}
+              onClick={() => {
+                setActivePlatform(platform.id);
+                setFilterType('');
+              }}
+              className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-xs font-black transition-all ${btnClass}`}
+            >
+              <span className="text-sm leading-none">{platform.icon}</span>
+              {platform.label}
+            </button>
+          );
+        })}
       </div>
 
       {/* ── TOAST ALERTS ── */}
@@ -827,13 +748,15 @@ function Contests() {
       <div>
         <div className="flex items-center justify-between mb-2.5 px-0.5">
           <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400">Dashboard Metrics</span>
-          <span className="text-[10px] italic text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-full capitalize font-semibold">{stats.label}</span>
+          <span className="text-[10px] italic text-slate-400 bg-slate-100 dark:bg-slate-800 px-2.5 py-0.5 rounded-full capitalize font-semibold">
+            {selectedStudentId === 'all' ? 'platform average' : 'student-specific stats'}
+          </span>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <StatCard
             icon={ClipboardList}
             label="Eligible Rated"
-            value={stats.total}
+            value={metrics.eligible}
             sub={selectedBatch || 'All batches'}
             colorClass="text-slate-600 dark:text-slate-300"
             bgClass="bg-slate-100 dark:bg-slate-800"
@@ -841,7 +764,7 @@ function Contests() {
           <StatCard
             icon={CheckCircle2}
             label={selectedStudentId === 'all' ? 'Avg Attended' : 'Attended'}
-            value={stats.attended}
+            value={metrics.attended}
             sub="Past contests"
             colorClass="text-emerald-600 dark:text-emerald-450"
             bgClass="bg-emerald-50 dark:bg-emerald-950/40"
@@ -849,7 +772,7 @@ function Contests() {
           <StatCard
             icon={AlertCircle}
             label={selectedStudentId === 'all' ? 'Avg Missed' : 'Missed'}
-            value={stats.missed}
+            value={metrics.missed}
             sub="Past contests"
             colorClass="text-rose-600 dark:text-rose-400"
             bgClass="bg-rose-50 dark:bg-rose-950/40"
@@ -857,46 +780,50 @@ function Contests() {
           <StatCard
             icon={Target}
             label="Attendance Rate"
-            value={`${stats.percentage}%`}
-            sub={stats.percentage >= 75 ? '✓ Above threshold' : '⚠ Below 75%'}
-            colorClass={stats.percentage >= 75 ? 'text-indigo-600 dark:text-indigo-400' : 'text-amber-600 dark:text-amber-400'}
-            bgClass={stats.percentage >= 75 ? 'bg-indigo-50 dark:bg-indigo-950/40' : 'bg-amber-50 dark:bg-amber-950/40'}
-          />
-          <StatCard
-            icon={Zap}
-            label="Unrated Contests"
-            value={stats.unrated}
-            sub="Excluded from rate"
-            colorClass="text-amber-600 dark:text-amber-400"
-            bgClass="bg-amber-50 dark:bg-amber-950/40"
+            value={`${metrics.rate}%`}
+            sub="Average %"
+            colorClass={style.text}
+            bgClass={style.bgMuted}
           />
           <StatCard
             icon={Activity}
             label="Ongoing Contests"
-            value={stats.ongoing}
+            value={metrics.ongoing}
             sub="Active now"
-            colorClass="text-blue-600 dark:text-blue-400"
-            bgClass="bg-blue-50 dark:bg-blue-950/40"
+            colorClass="text-amber-500"
+            bgClass="bg-amber-50 dark:bg-amber-950/40"
+          />
+          <StatCard
+            icon={Trophy}
+            label="Active Platform"
+            value={activePlatform === 'leetcode' ? 'LeetCode' : activePlatform === 'codechef' ? 'CodeChef' : 'Codeforces'}
+            sub="View selected"
+            colorClass={style.text}
+            bgClass={style.bgMuted}
           />
         </div>
       </div>
 
-      {/* ── COMPACT TOOLBAR ── */}
-      <div className="flex flex-wrap items-center gap-2.5 bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800/80 px-4 py-3 rounded-2xl shadow-sm">
-        {/* Search */}
-        <div className="relative flex-1 min-w-[170px]">
+      {/* ── FILTER TOOLBAR ── */}
+      <div className="flex flex-wrap items-center gap-3 bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800/80 p-3.5 rounded-2xl shadow-sm">
+        <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400 flex items-center gap-1">
+          <Filter className="h-3 w-3" /> Filters
+        </span>
+
+        {/* Student Search and select */}
+        <div className="relative shrink-0 w-full sm:w-60">
           <Search className="absolute inset-y-0 left-3 my-auto h-3.5 w-3.5 text-slate-400 pointer-events-none" />
           <input
             type="text"
+            placeholder="Search student by name/roll..."
             value={studentSearch}
             onChange={e => setStudentSearch(e.target.value)}
-            placeholder="Search student name / roll…"
             className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 py-2 pl-8 pr-3 text-xs outline-none focus:border-primary-400 dark:text-white placeholder:text-slate-400 transition-colors"
           />
         </div>
 
-        {/* Student selector */}
-        <div className="relative flex-1 min-w-[180px]">
+        {/* Student Dropdown */}
+        <div className="relative flex-1 min-w-[200px]">
           <Users className="absolute inset-y-0 left-3 my-auto h-3.5 w-3.5 text-slate-400 pointer-events-none" />
           <select
             value={selectedStudentId}
@@ -919,11 +846,11 @@ function Contests() {
             className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 py-2 pl-8 pr-3 text-xs font-semibold outline-none focus:border-primary-400 dark:text-slate-200 transition-colors appearance-none"
           >
             <option value="">All Batches</option>
-            {BATCH_OPTIONS.map(b => <option key={b} value={b}>{b}</option>)}
+            {availableBatches.map(b => <option key={b} value={b}>{b}</option>)}
           </select>
         </div>
 
-        {/* Contest Type */}
+        {/* Contest Type (Dynamic options based on platform) */}
         <div className="relative shrink-0">
           <BarChart3 className="absolute inset-y-0 left-3 my-auto h-3.5 w-3.5 text-slate-400 pointer-events-none" />
           <select
@@ -932,8 +859,30 @@ function Contests() {
             className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 py-2 pl-8 pr-3 text-xs font-semibold outline-none focus:border-primary-400 dark:text-slate-200 transition-colors appearance-none"
           >
             <option value="">All Types</option>
-            <option value="weekly">Weekly Only</option>
-            <option value="biweekly">Biweekly Only</option>
+            {activePlatform === 'leetcode' && (
+              <>
+                <option value="weekly">Weekly</option>
+                <option value="biweekly">Biweekly</option>
+              </>
+            )}
+            {activePlatform === 'codechef' && (
+              <>
+                <option value="starters">Starters</option>
+                <option value="cook-off">Cook-Off</option>
+                <option value="lunchtime">Lunchtime</option>
+                <option value="long challenge">Long Challenge</option>
+              </>
+            )}
+            {activePlatform === 'codeforces' && (
+              <>
+                <option value="div1">Div 1</option>
+                <option value="div2">Div 2</option>
+                <option value="div3">Div 3</option>
+                <option value="div4">Div 4</option>
+                <option value="educational">Educational</option>
+                <option value="global">Global</option>
+              </>
+            )}
           </select>
         </div>
 
@@ -961,7 +910,7 @@ function Contests() {
           onClick={() => setShowAnalyticsPanel(p => !p)}
           className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all border shrink-0 ${
             showAnalyticsPanel
-              ? 'bg-primary-50 text-primary-700 border-primary-200 dark:bg-primary-950/30 dark:text-primary-400 dark:border-primary-900/30'
+              ? `bg-primary-50 ${style.text} ${style.border} dark:bg-slate-800`
               : 'bg-white text-slate-500 border-slate-200 dark:bg-slate-900 dark:text-slate-400 dark:border-slate-800'
           }`}
         >
@@ -972,9 +921,23 @@ function Contests() {
         {/* Export */}
         <button
           onClick={handleExportReport}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400 text-xs font-bold transition-all shadow-sm shrink-0 border border-emerald-100 dark:border-emerald-900/30"
+          className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-450 text-xs font-bold transition-all shadow-sm shrink-0 border border-emerald-100 dark:border-emerald-900/30"
         >
           <Download className="h-3.5 w-3.5" /> Export
+        </button>
+
+        {/* Sync / Refresh */}
+        <button
+          onClick={handleSyncPlatformData}
+          disabled={syncingPlatform}
+          className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all shadow-sm shrink-0 border ${
+            syncingPlatform 
+              ? 'bg-slate-100 text-slate-400 border-slate-200 dark:bg-slate-800 dark:text-slate-500 dark:border-slate-700 cursor-not-allowed'
+              : `bg-white hover:bg-slate-50 ${style.text} ${style.border} dark:bg-slate-900 dark:hover:bg-slate-800`
+          }`}
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${syncingPlatform ? 'animate-spin' : ''}`} />
+          {syncingPlatform ? 'Syncing...' : 'Sync'}
         </button>
       </div>
 
@@ -985,7 +948,7 @@ function Contests() {
           {/* Header block with tab selector */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-4">
             <h3 className="text-xs font-extrabold text-slate-700 dark:text-white uppercase tracking-wider flex items-center gap-2">
-              <TrendingUp className="h-4 w-4 text-primary-500" />
+              <TrendingUp className={`h-4 w-4 ${style.text}`} />
               Academic Participation Analytics
             </h3>
             <div className="flex rounded-xl bg-slate-50 dark:bg-slate-800/60 p-1 border border-slate-100 dark:border-slate-700/60 gap-0.5">
@@ -998,10 +961,10 @@ function Contests() {
                 <button
                   key={tab.id}
                   onClick={() => setActiveAnalyticsTab(tab.id)}
-                  className={`px-3 py-1.5 text-[10px] font-bold rounded-lg transition-all ${
+                  className={`px-3 py-1.5 rounded-lg text-[10px] font-black transition-all ${
                     activeAnalyticsTab === tab.id
-                      ? 'bg-white dark:bg-slate-700 text-slate-800 dark:text-white shadow-sm'
-                      : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+                      ? `${style.bg} text-white shadow-sm`
+                      : 'text-slate-550 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
                   }`}
                 >
                   {tab.label}
@@ -1010,54 +973,32 @@ function Contests() {
             </div>
           </div>
 
-          {/* Summary Cards Row */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/30 p-4">
-              <span className="text-[10px] font-bold text-slate-400 dark:text-slate-550 uppercase tracking-wider block">Total Eligible Contests</span>
-              <span className="text-xl font-black text-slate-800 dark:text-white mt-1 block">{stats.total}</span>
-            </div>
-            <div className="rounded-xl border border-slate-100 dark:border-slate-800 bg-emerald-50/30 dark:bg-emerald-950/10 p-4">
-              <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-500 uppercase tracking-wider block">Attended Contests</span>
-              <span className="text-xl font-black text-emerald-600 dark:text-emerald-400 mt-1 block">{stats.attended}</span>
-            </div>
-            <div className="rounded-xl border border-slate-100 dark:border-slate-800 bg-rose-50/30 dark:bg-rose-950/10 p-4">
-              <span className="text-[10px] font-bold text-rose-600 dark:text-rose-500 uppercase tracking-wider block">Missed Contests</span>
-              <span className="text-xl font-black text-rose-600 dark:text-rose-400 mt-1 block">{stats.missed}</span>
-            </div>
-            <div className="rounded-xl border border-slate-100 dark:border-slate-800 bg-indigo-50/30 dark:bg-indigo-950/15 p-4">
-              <span className="text-[10px] font-bold text-indigo-650 dark:text-indigo-400 uppercase tracking-wider block">Attendance Rate</span>
-              <span className="text-xl font-black text-indigo-600 dark:text-indigo-400 mt-1 block">{stats.percentage}%</span>
-            </div>
-          </div>
-
-          {/* Main Grid Layout */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            
             {/* Left Side Chart/Table Block (2/3 width) */}
-            <div className="lg:col-span-2 space-y-4">
+            <div className="lg:col-span-2 space-y-2">
               {activeAnalyticsTab === 'trend' && (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400">Monthly Attendance Trend</span>
+                    <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400">Monthly Attendance Rate %</span>
                     <span className="text-[10px] text-slate-400 font-semibold italic">Showing last {monthlyTrendData.length} months</span>
                   </div>
-                  <div className="h-64 rounded-xl border border-slate-100 dark:border-slate-850 p-2 bg-slate-50/20 dark:bg-slate-900/10">
+                  <div className="h-60 w-full bg-slate-50/20 dark:bg-slate-900/10 rounded-xl border border-slate-150 dark:border-slate-800 p-2">
                     {monthlyTrendData.length === 0 ? (
-                      <div className="flex h-full items-center justify-center text-xs text-slate-400 italic">No monthly data available yet.</div>
+                      <div className="h-full flex items-center justify-center text-xs text-slate-450 italic">No historical trend data available.</div>
                     ) : (
                       <ResponsiveContainer width="100%" height="100%">
                         <AreaChart data={monthlyTrendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                           <defs>
-                            <linearGradient id="monthlyGrad" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.25} />
-                              <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                            <linearGradient id="colorRate" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor={style.chartColor} stopOpacity={0.2}/>
+                              <stop offset="95%" stopColor={style.chartColor} stopOpacity={0}/>
                             </linearGradient>
                           </defs>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148,163,184,0.08)" />
-                          <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#94a3b8', fontWeight: 600 }} axisLine={false} tickLine={false} />
-                          <YAxis domain={[0, 100]} tick={{ fontSize: 9, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" className="dark:stroke-slate-800/60" />
+                          <XAxis dataKey="name" stroke="#94a3b8" fontSize={9} tickLine={false} axisLine={false} />
+                          <YAxis stroke="#94a3b8" fontSize={9} tickLine={false} axisLine={false} domain={[0, 100]} />
                           <RechartsTooltip content={<CustomTooltip />} />
-                          <Area type="monotone" dataKey="rate" name="Attendance Rate" stroke="#3b82f6" strokeWidth={3} fill="url(#monthlyGrad)" dot={{ r: 4, fill: '#3b82f6', strokeWidth: 1 }} activeDot={{ r: 6 }} />
+                          <Area type="monotone" dataKey="rate" stroke={style.chartColor} fillOpacity={1} fill="url(#colorRate)" strokeWidth={2.5} />
                         </AreaChart>
                       </ResponsiveContainer>
                     )}
@@ -1066,76 +1007,55 @@ function Contests() {
               )}
 
               {activeAnalyticsTab === 'semester' && (
-                <div className="space-y-4">
+                <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400">Semester-wise Breakdown</span>
+                    <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400">Semester-wise Attendance Trend %</span>
+                    <span className="text-[10px] text-slate-400 font-semibold italic">8-Semester tracking matrix</span>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {/* Bar chart */}
-                    <div className="h-56 rounded-xl border border-slate-100 dark:border-slate-850 p-2 bg-slate-50/20 dark:bg-slate-900/10">
+                  <div className="h-60 w-full bg-slate-50/20 dark:bg-slate-900/10 rounded-xl border border-slate-150 dark:border-slate-800 p-2">
+                    {semesterAnalyticsData.length === 0 ? (
+                      <div className="h-full flex items-center justify-center text-xs text-slate-450 italic">No semester records available.</div>
+                    ) : (
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={semesterAnalyticsData} margin={{ top: 10, right: 5, left: -25, bottom: 0 }} barSize={16}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148,163,184,0.08)" />
-                          <XAxis dataKey="semester" tickFormatter={(v) => v.replace('Semester ', 'S')} tick={{ fontSize: 9, fill: '#94a3b8', fontWeight: 600 }} axisLine={false} tickLine={false} />
-                          <YAxis domain={[0, 100]} tick={{ fontSize: 9, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" className="dark:stroke-slate-800/60" />
+                          <XAxis dataKey="semester" stroke="#94a3b8" fontSize={9} tickLine={false} axisLine={false} />
+                          <YAxis stroke="#94a3b8" fontSize={9} tickLine={false} axisLine={false} domain={[0, 100]} />
                           <RechartsTooltip content={<CustomTooltip />} />
-                          <Bar dataKey="rate" name="Attendance Rate" fill="#6366f1" radius={[4, 4, 0, 0]}>
+                          <Bar dataKey="rate" fill={style.chartColor} radius={[4, 4, 0, 0]}>
                             {semesterAnalyticsData.map((entry, index) => (
-                              <Cell key={`cell-${index}`} fill={entry.rate >= 75 ? '#10b981' : entry.rate >= 50 ? '#f59e0b' : '#ef4444'} />
+                              <Cell key={`cell-${index}`} fill={style.chartColor} opacity={entry.rate > 0 ? 0.95 : 0.25} />
                             ))}
                           </Bar>
                         </BarChart>
                       </ResponsiveContainer>
-                    </div>
-
-                    {/* Table */}
-                    <div className="border border-slate-150 dark:border-slate-800 rounded-xl overflow-hidden text-xs max-h-56 overflow-y-auto">
-                      <table className="w-full text-left border-collapse">
-                        <thead>
-                          <tr className="bg-slate-50 dark:bg-slate-800/40 border-b border-slate-105 dark:border-slate-850 font-bold text-slate-550">
-                            <th className="py-2 px-3">Semester</th>
-                            <th className="py-2 px-3 text-right">Eligible</th>
-                            <th className="py-2 px-3 text-right">Attended</th>
-                            <th className="py-2 px-3 text-right">Rate</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-50 dark:divide-slate-850/50">
-                          {semesterAnalyticsData.map(s => (
-                            <tr key={s.semester} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/20">
-                              <td className="py-2 px-3 font-semibold text-slate-700 dark:text-slate-300">{s.semester}</td>
-                              <td className="py-2 px-3 text-right font-medium text-slate-505">{s.total}</td>
-                              <td className="py-2 px-3 text-right font-semibold text-emerald-600 dark:text-emerald-400">{s.present}</td>
-                              <td className="py-2 px-3 text-right font-extrabold text-slate-800 dark:text-slate-200">{s.rate}%</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                    )}
                   </div>
                 </div>
               )}
 
               {activeAnalyticsTab === 'batch' && (
-                <div className="space-y-4">
+                <div className="space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400">Batch-wise Performance Comparison</span>
+                    <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400">Comparative Batch Metrics</span>
+                    <span className="text-[10px] text-slate-400 font-semibold italic">Cohort analysis</span>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     {/* Bar Chart comparing attendance */}
-                    <div className="h-56 rounded-xl border border-slate-100 dark:border-slate-850 p-2 bg-slate-50/20 dark:bg-slate-900/10">
+                    <div className="h-44 bg-slate-50/20 dark:bg-slate-900/10 rounded-xl border border-slate-150 dark:border-slate-800 p-2">
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={batchComparisonData} margin={{ top: 10, right: 5, left: -20, bottom: 0 }} barSize={32}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148,163,184,0.08)" />
-                          <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#94a3b8', fontWeight: 600 }} axisLine={false} tickLine={false} />
-                          <YAxis domain={[0, 100]} tick={{ fontSize: 9, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" className="dark:stroke-slate-800/60" />
+                          <XAxis dataKey="name" stroke="#94a3b8" fontSize={9} tickLine={false} axisLine={false} />
+                          <YAxis stroke="#94a3b8" fontSize={9} tickLine={false} axisLine={false} domain={[0, 100]} />
                           <RechartsTooltip content={<CustomTooltip />} />
-                          <Bar dataKey="attendance" name="Avg Attendance" fill="#06b6d4" radius={[6, 6, 0, 0]} />
+                          <Bar dataKey="attendance" fill={style.chartColor} radius={[4, 4, 0, 0]} name="Avg Attendance" />
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
 
-                    {/* Table */}
-                    <div className="border border-slate-150 dark:border-slate-800 rounded-xl overflow-hidden text-xs">
+                    {/* Table overview */}
+                    <div className="border border-slate-150 dark:border-slate-800 rounded-xl overflow-hidden text-xs bg-slate-50/10 dark:bg-slate-900/5">
                       <table className="w-full text-left border-collapse">
                         <thead>
                           <tr className="bg-slate-50 dark:bg-slate-800/40 border-b border-slate-100 dark:border-slate-850 font-bold text-slate-550">
@@ -1155,17 +1075,17 @@ function Contests() {
                             </tr>
                           ))}
                           {selectedStudentId !== 'all' && selectedStudentInfo && (
-                            <tr className="bg-primary-50/20 dark:bg-primary-950/15 border-t border-primary-100 dark:border-primary-900/30">
-                              <td className="py-2.5 px-3 font-extrabold text-primary-650 dark:text-primary-400 flex items-center gap-1">
-                                <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary-500 shrink-0" />
+                            <tr className={`bg-primary-50/20 dark:bg-primary-950/15 border-t ${style.borderMuted}`}>
+                              <td className={`py-2.5 px-3 font-extrabold ${style.text} flex items-center gap-1`}>
+                                <span className={`inline-block h-1.5 w-1.5 rounded-full ${style.bg} shrink-0`} />
                                 {selectedStudentInfo.name.split(' ')[0]} (You)
                               </td>
                               <td className="py-2.5 px-3 text-right text-slate-400 dark:text-slate-500 font-medium">—</td>
-                              <td className="py-2.5 px-3 text-right font-extrabold text-primary-655 dark:text-primary-400">
-                                {studentSummaries.find(s => s.id === parseInt(selectedStudentId))?.current_rating || 1500}
+                              <td className={`py-2.5 px-3 text-right font-extrabold ${style.text}`}>
+                                {studentSummaries.find(s => s.id === parseInt(selectedStudentId))?.current_rating || 0}
                               </td>
-                              <td className="py-2.5 px-3 text-right font-extrabold text-primary-655 dark:text-primary-400">
-                                {stats.percentage}%
+                              <td className={`py-2.5 px-3 text-right font-extrabold ${style.text}`}>
+                                {metrics.rate}%
                               </td>
                             </tr>
                           )}
@@ -1180,7 +1100,7 @@ function Contests() {
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400">Contest Participation History</span>
-                    <span className="text-[10px] text-slate-400 font-semibold italic">{eligibleContests.length} past contests during academic period</span>
+                    <span className="text-[10px] text-slate-400 font-semibold italic">{filteredContestsByBatch.length} past contests during academic period</span>
                   </div>
                   <div className="border border-slate-150 dark:border-slate-800 rounded-xl overflow-hidden text-xs max-h-56 overflow-y-auto">
                     <table className="w-full text-left border-collapse">
@@ -1193,23 +1113,23 @@ function Contests() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-50 dark:divide-slate-850/50">
-                        {eligibleContests.length === 0 ? (
+                        {filteredContestsByBatch.length === 0 ? (
                           <tr>
                             <td colSpan={4} className="text-center py-10 text-slate-400 italic">No historical contests found.</td>
                           </tr>
                         ) : (
-                          eligibleContests.map(c => {
+                          filteredContestsByBatch.map(c => {
                             const isPresent = selectedStudentId === 'all'
                               ? c.attendance_count > 0
-                              : c.is_joined;
+                              : c.is_joined || c.attendance_status === 'PRESENT';
                             return (
                               <tr key={c.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/20">
-                                <td className="py-2 px-4 font-semibold text-slate-705 dark:text-slate-300">{c.name}</td>
+                                <td className="py-2 px-4 font-semibold text-slate-700 dark:text-slate-300">{c.name}</td>
                                 <td className="py-2 px-3 text-slate-500 whitespace-nowrap">
                                   {new Date(c.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
                                 </td>
                                 <td className="py-2 px-3 uppercase tracking-wide font-extrabold text-[9px]">
-                                  <span className={c.type === 'biweekly' ? 'text-purple-600' : 'text-blue-600'}>{c.type}</span>
+                                  <TypeBadge type={c.type} />
                                 </td>
                                 <td className="py-2 px-4 text-right font-extrabold text-[10px]">
                                   {selectedStudentId === 'all' ? (
@@ -1231,75 +1151,61 @@ function Contests() {
               )}
             </div>
 
-            {/* Right Side Weekly vs Biweekly Breakdown Card (1/3 width) */}
+            {/* Right Side Platform Breakdown Card (1/3 width) */}
             <div className="lg:col-span-1">
               <div className="rounded-xl border border-slate-150 dark:border-slate-800 bg-slate-50/20 dark:bg-slate-900/10 p-5 space-y-5">
                 <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-2">
-                  <Calendar className="h-4.5 w-4.5 text-primary-500" />
-                  <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-600 dark:text-slate-400">Weekly vs Biweekly Analysis</span>
+                  <Calendar className={`h-4.5 w-4.5 ${style.text}`} />
+                  <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-600 dark:text-slate-400">
+                    {activePlatform === 'leetcode' ? 'LeetCode' : activePlatform === 'codechef' ? 'CodeChef' : 'Codeforces'} Category Analysis
+                  </span>
                 </div>
 
-                {/* Weekly stats block */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-bold text-slate-700 dark:text-slate-300">Weekly Contests</span>
-                    <span className="font-extrabold text-blue-600 dark:text-blue-400">{weeklyStats.rate}%</span>
-                  </div>
-                  <div className="w-full h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-                    <div className="h-full rounded-full bg-blue-500 transition-all duration-300" style={{ width: `${weeklyStats.rate}%` }} />
-                  </div>
-                  <div className="grid grid-cols-3 gap-1 text-[10px] text-center font-bold mt-1 text-slate-400">
-                    <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 py-1 rounded-lg">
-                      <span className="block text-slate-700 dark:text-slate-300 text-xs font-black">{weeklyStats.eligible}</span>
-                      Eligible
-                    </div>
-                    <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 py-1 rounded-lg">
-                      <span className="block text-emerald-600 dark:text-emerald-450 text-xs font-black">{weeklyStats.attended}</span>
-                      Attended
-                    </div>
-                    <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 py-1 rounded-lg">
-                      <span className="block text-rose-500 dark:text-rose-400 text-xs font-black">{weeklyStats.missed}</span>
-                      Missed
-                    </div>
-                  </div>
-                </div>
+                {platformBreakdowns.map((item, idx) => {
+                  let progressColor = style.bg;
+                  let textColor = style.text;
+                  if (activePlatform === 'leetcode') {
+                    progressColor = idx === 0 ? "bg-orange-500" : "bg-purple-500";
+                    textColor = idx === 0 ? "text-orange-600 dark:text-orange-400" : "text-purple-600 dark:text-purple-400";
+                  }
 
-                {/* Biweekly stats block */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-bold text-slate-700 dark:text-slate-300">Biweekly Contests</span>
-                    <span className="font-extrabold text-purple-600 dark:text-purple-400">{biweeklyStats.rate}%</span>
-                  </div>
-                  <div className="w-full h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-                    <div className="h-full rounded-full bg-purple-500 transition-all duration-300" style={{ width: `${biweeklyStats.rate}%` }} />
-                  </div>
-                  <div className="grid grid-cols-3 gap-1 text-[10px] text-center font-bold mt-1 text-slate-400">
-                    <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 py-1 rounded-lg">
-                      <span className="block text-slate-700 dark:text-slate-300 text-xs font-black">{biweeklyStats.eligible}</span>
-                      Eligible
+                  return (
+                    <div key={item.label} className="space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-bold text-slate-700 dark:text-slate-300">{item.label}</span>
+                        <span className={`font-extrabold ${textColor}`}>{item.rate}%</span>
+                      </div>
+                      <div className="w-full h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                        <div className={`h-full rounded-full transition-all duration-300 ${progressColor}`} style={{ width: `${item.rate}%` }} />
+                      </div>
+                      <div className="grid grid-cols-3 gap-1 text-[10px] text-center font-bold mt-1 text-slate-400">
+                        <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 py-1 rounded-lg">
+                          <span className="block text-slate-700 dark:text-slate-300 text-xs font-black">{item.eligible}</span>
+                          Eligible
+                        </div>
+                        <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 py-1 rounded-lg">
+                          <span className="block text-emerald-600 dark:text-emerald-450 text-xs font-black">{item.attended}</span>
+                          Attended
+                        </div>
+                        <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 py-1 rounded-lg">
+                          <span className="block text-rose-500 dark:text-rose-455 text-xs font-black">{item.missed}</span>
+                          Missed
+                        </div>
+                      </div>
                     </div>
-                    <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 py-1 rounded-lg">
-                      <span className="block text-emerald-600 dark:text-emerald-450 text-xs font-black">{biweeklyStats.attended}</span>
-                      Attended
-                    </div>
-                    <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 py-1 rounded-lg">
-                      <span className="block text-rose-500 dark:text-rose-455 text-xs font-black">{biweeklyStats.missed}</span>
-                      Missed
-                    </div>
-                  </div>
-                </div>
+                  );
+                })}
               </div>
             </div>
-
           </div>
         </div>
       )}
 
-      {/* ── RECENT ACTIVITY TIMELINE ── */}
+      {/* ── RECENT ACTIVITY BANNER ── */}
       {selectedStudentId !== 'all' && recentActivity.length > 0 && (
         <div className="bg-gradient-to-r from-slate-50 to-slate-50/60 dark:from-slate-900/60 dark:to-slate-900/40 border border-slate-200/60 dark:border-slate-800/80 rounded-2xl p-4 shadow-sm animate-fade-in">
           <div className="flex items-center gap-2 mb-3">
-            <Activity className="h-3.5 w-3.5 text-primary-500 animate-pulse" />
+            <Activity className={`h-3.5 w-3.5 ${style.text} animate-pulse`} />
             <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500 dark:text-slate-400">Recent Activity</span>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -1323,15 +1229,40 @@ function Contests() {
               Contest Records
             </span>
             {filteredContestsByBatch.length > 0 && (
-              <span className="text-[10px] font-bold bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-2 py-0.5 rounded-full ml-1">
+              <span className="text-[10px] font-bold bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-2.5 py-0.5 rounded-full ml-1">
                 {filteredContestsByBatch.length}
               </span>
             )}
           </div>
           {selectedStudentInfo && (
-            <div className="flex items-center gap-1.5 bg-primary-50 dark:bg-primary-950/30 border border-primary-100 dark:border-primary-900/30 px-3 py-1.5 rounded-xl">
-              <Users className="h-3 w-3 text-primary-500" />
-              <span className="text-[10px] font-bold text-primary-700 dark:text-primary-400">{selectedStudentInfo.name} · {selectedStudentInfo.roll_no}</span>
+            <div className="flex items-center gap-3">
+              {platformRanking && (
+                <div className={`flex items-center gap-2.5 ${style.bgMuted} border ${style.borderMuted} px-3 py-1.5 rounded-xl text-[10px] font-bold ${style.text}`}>
+                  <span>Rating: <span className="font-extrabold">{platformRanking.rating}</span></span>
+                  {platformRanking.globalRanking && (
+                    <>
+                      <span className="opacity-40">|</span>
+                      <span>Rank: <span className="font-extrabold">#{platformRanking.globalRanking}</span></span>
+                    </>
+                  )}
+                  {platformRanking.rank && (
+                    <>
+                      <span className="opacity-40">|</span>
+                      <span>Rank: <span className="font-extrabold">{platformRanking.rank}</span></span>
+                    </>
+                  )}
+                  {platformRanking.maxRank && (
+                    <>
+                      <span className="opacity-40">|</span>
+                      <span>Max Rank: <span className="font-extrabold">{platformRanking.maxRank}</span></span>
+                    </>
+                  )}
+                </div>
+              )}
+              <div className={`flex items-center gap-1.5 ${style.bgMuted} border ${style.borderMuted} px-3 py-1.5 rounded-xl`}>
+                <Users className={`h-3 w-3 ${style.text}`} />
+                <span className={`text-[10px] font-bold ${style.text}`}>{selectedStudentInfo.name} · {selectedStudentInfo.roll_no}</span>
+              </div>
             </div>
           )}
         </div>
@@ -1364,7 +1295,7 @@ function Contests() {
                 <tr>
                   <td colSpan={8} className="text-center py-16">
                     <div className="flex flex-col items-center gap-3">
-                      <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
+                      <div className={`h-8 w-8 animate-spin rounded-full border-2 ${style.text} border-t-transparent`} />
                       <span className="text-xs text-slate-400 font-medium">Loading contests…</span>
                     </div>
                   </td>
@@ -1387,14 +1318,14 @@ function Contests() {
                 </tr>
               ) : (
                 paginatedContests.map((c) => {
-                  const timing = getContestTiming(c.date);
+                  const timing = getContestTiming(c.date, c.duration || 5400);
                   const isExpanded = expandedContestId === c.id;
                   const rate = c.registration_count > 0
                     ? Math.round((c.attendance_count / c.registration_count) * 100) : 0;
 
                   return (
                     <React.Fragment key={c.id}>
-                      <tr className={`hover:bg-slate-50/80 dark:hover:bg-slate-800/30 transition-colors duration-150 ${isExpanded ? 'bg-primary-50/30 dark:bg-primary-950/10' : ''}`}>
+                      <tr className={`hover:bg-slate-50/80 dark:hover:bg-slate-800/30 transition-colors duration-150 ${isExpanded ? `${style.bgMuted}` : ''}`}>
                         {/* Contest Name */}
                         <td className="px-5 py-3.5 pl-6">
                           <div className="flex items-center gap-2">
@@ -1466,13 +1397,13 @@ function Contests() {
                                 >
                                   <Eye className="h-3 w-3" />
                                   {isExpanded ? 'Hide' : 'Details'}
-                                  {isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRightIcon className="h-3 w-3" />}
+                                  {isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
                                 </button>
 
                                 {selectedStudentId === 'all' ? (
                                   <a
                                     href={`/attendance?contestId=${c.id}`}
-                                    className="flex items-center gap-1 text-[10px] font-bold px-2.5 py-1.5 rounded-lg bg-primary-50 text-primary-700 dark:bg-primary-950/30 dark:text-primary-400 hover:bg-primary-100 dark:hover:bg-primary-950/50 transition-all border border-primary-100 dark:border-primary-900/30"
+                                    className={`flex items-center gap-1 text-[10px] font-bold px-2.5 py-1.5 rounded-lg ${style.bgMuted} ${style.text} hover:bg-opacity-80 transition-all border ${style.borderMuted}`}
                                   >
                                     <Users className="h-3 w-3" /> Participants
                                   </a>
@@ -1481,7 +1412,7 @@ function Contests() {
                                     {timing === 'upcoming' && !c.is_registered && (
                                       <button
                                         onClick={() => handleRegister(c.id)}
-                                        className="text-[10px] font-bold px-2.5 py-1.5 rounded-lg border border-primary-400 text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-950/30 transition-all"
+                                        className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg border ${style.border} ${style.text} hover:${style.bgMuted} transition-all`}
                                       >
                                         Register
                                       </button>
@@ -1489,7 +1420,7 @@ function Contests() {
                                     {timing === 'active' && !c.is_joined && (
                                       <button
                                         onClick={() => handleJoin(c.id)}
-                                        className="text-[10px] font-bold px-2.5 py-1.5 rounded-lg bg-primary-600 text-white hover:bg-primary-500 transition-all shadow-sm"
+                                        className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg ${style.bg} text-white hover:opacity-90 transition-all shadow-sm`}
                                       >
                                         Join Now
                                       </button>
@@ -1498,7 +1429,7 @@ function Contests() {
                                       <button
                                         onClick={() => openOverride(c)}
                                         className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg border transition-all ${
-                                          c.is_joined
+                                          c.is_joined || c.attendance_status === 'PRESENT'
                                             ? 'border-rose-200 text-rose-600 hover:bg-rose-50/30 dark:border-rose-900/30 dark:text-rose-400'
                                             : 'border-emerald-200 text-emerald-600 hover:bg-emerald-50/30 dark:border-emerald-900/30 dark:text-emerald-400'
                                         }`}
@@ -1515,7 +1446,7 @@ function Contests() {
                               <div className="flex items-center gap-1">
                                 <button
                                   onClick={() => openEditModal(c)}
-                                  className="p-1.5 rounded-lg text-slate-400 hover:text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-950/30 transition-all"
+                                  className={`p-1.5 rounded-lg text-slate-400 hover:${style.text} hover:${style.bgMuted} transition-all`}
                                   title="Edit Contest"
                                 >
                                   <Edit className="h-3.5 w-3.5" />
@@ -1537,61 +1468,182 @@ function Contests() {
                       {isExpanded && (
                         <tr className="bg-slate-50/70 dark:bg-slate-800/20">
                           <td colSpan={8} className="px-6 py-4 border-b border-slate-100 dark:border-slate-800">
-                            <div className="animate-fade-in space-y-3">
+                            <div className="animate-fade-in space-y-4">
                               <div className="flex items-center justify-between">
-                                <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-widest">Audit Details</span>
-                                <span className="text-[10px] text-slate-400 font-mono bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
+                                <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-widest">Contest Summary Details</span>
+                                <span className="text-[10px] text-slate-400 font-mono bg-slate-100 dark:bg-slate-850 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-800">
                                   Slug: <span className="font-bold text-slate-600 dark:text-slate-300">{c.contest_id}</span>
                                 </span>
                               </div>
 
                               {selectedStudentId === 'all' ? (
-                                <div>
-                                  <h5 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">Participant Log (Top 15)</h5>
+                                <div className="space-y-6">
                                   {loadingParticipants[c.id] ? (
-                                    <div className="flex justify-center py-4"><Loader2 className="h-5 w-5 animate-spin text-primary-500" /></div>
-                                  ) : !contestParticipants[c.id] || contestParticipants[c.id].length === 0 ? (
-                                    <p className="text-xs text-slate-400 italic">No records found for this contest.</p>
+                                    <div className="flex justify-center py-6"><Loader2 className={`h-6 w-6 animate-spin ${style.text}`} /></div>
+                                  ) : !contestParticipants[c.id] ? (
+                                    <p className="text-xs text-slate-400 italic">No participation records loaded.</p>
                                   ) : (
-                                    <>
-                                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2">
-                                        {contestParticipants[c.id].slice(0, 15).map(p => (
-                                          <div key={p.student_id} className="bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-700/60 p-2.5 rounded-xl flex items-center justify-between gap-2">
-                                            <div>
-                                              <span className="font-bold text-slate-800 dark:text-slate-200 text-xs block truncate max-w-[110px]">{p.name}</span>
-                                              <span className="text-[9px] text-slate-400 font-mono">{p.register_number}</span>
-                                            </div>
-                                            <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded-lg uppercase ${
-                                              p.status === 'present'
-                                                ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30'
-                                                : 'bg-rose-50 text-rose-600 dark:bg-rose-950/30'
-                                            }`}>
-                                              {p.status === 'present' ? 'Attended' : 'Missed'}
-                                            </span>
+                                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                                      {/* 1. Attended Students Table */}
+                                      <div className="space-y-2.5">
+                                        <h5 className="text-[11px] font-extrabold text-emerald-600 dark:text-emerald-450 uppercase tracking-wider flex items-center gap-1.5">
+                                          <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                                          Attended Students ({contestParticipants[c.id].attended?.length || 0})
+                                        </h5>
+                                        <div className="border border-slate-200/60 dark:border-slate-800 rounded-xl overflow-hidden shadow-sm bg-white dark:bg-slate-900 text-xs">
+                                          <div className="overflow-x-auto max-h-72">
+                                            <table className="w-full text-left border-collapse">
+                                              <thead>
+                                                <tr className="bg-slate-50 dark:bg-slate-800/40 border-b border-slate-100 dark:border-slate-800 font-extrabold text-[9px] uppercase tracking-wider text-slate-400">
+                                                  <th className="py-2.5 px-3">Student / Roll</th>
+                                                  <th className="py-2.5 px-3">Username</th>
+                                                  <th className="py-2.5 px-3 text-right">Rank</th>
+                                                  {activePlatform === 'leetcode' && <th className="py-2.5 px-3 text-right">Solved</th>}
+                                                  <th className="py-2.5 px-3 text-right">Rating Change</th>
+                                                </tr>
+                                              </thead>
+                                              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/40">
+                                                {!contestParticipants[c.id].attended || contestParticipants[c.id].attended.length === 0 ? (
+                                                  <tr>
+                                                    <td colSpan={activePlatform === 'leetcode' ? 5 : 4} className="py-8 text-center text-slate-450 italic">No students attended.</td>
+                                                  </tr>
+                                                ) : (
+                                                  contestParticipants[c.id].attended.map(p => (
+                                                    <tr key={p.student_id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/10">
+                                                      <td className="py-2.5 px-3">
+                                                        <span className="font-bold text-slate-800 dark:text-slate-200 block">{p.name}</span>
+                                                        <span className="text-[9px] text-slate-400 font-mono">{p.register_number}</span>
+                                                      </td>
+                                                      <td className="py-2.5 px-3 font-semibold text-slate-500 dark:text-slate-400">{p.platform_username || '—'}</td>
+                                                      <td className="py-2.5 px-3 text-right font-black text-slate-700 dark:text-slate-300">
+                                                        {p.contest_rank ? `#${p.contest_rank}` : '—'}
+                                                      </td>
+                                                      {activePlatform === 'leetcode' && (
+                                                        <td className="py-2.5 px-3 text-right font-bold text-slate-650 dark:text-slate-400">
+                                                          {p.problems_solved !== null ? `${p.problems_solved}/4` : '—'}
+                                                        </td>
+                                                      )}
+                                                      <td className="py-2.5 px-3 text-right font-extrabold">
+                                                        {p.rating_change > 0 ? (
+                                                          <span className="text-emerald-600">+{p.rating_change}</span>
+                                                        ) : p.rating_change < 0 ? (
+                                                          <span className="text-rose-500">{p.rating_change}</span>
+                                                        ) : (
+                                                          <span className="text-slate-400">0</span>
+                                                        )}
+                                                      </td>
+                                                    </tr>
+                                                  ))
+                                                )}
+                                              </tbody>
+                                            </table>
                                           </div>
-                                        ))}
+                                        </div>
                                       </div>
-                                      {contestParticipants[c.id].length > 15 && (
-                                        <p className="text-[10px] text-slate-400 italic text-right mt-1.5">
-                                          +{contestParticipants[c.id].length - 15} more records…
-                                        </p>
-                                      )}
-                                    </>
+
+                                      {/* 2. Missed Students Table */}
+                                      <div className="space-y-2.5">
+                                        <h5 className="text-[11px] font-extrabold text-rose-600 dark:text-rose-400 uppercase tracking-wider flex items-center gap-1.5">
+                                          <span className="h-2 w-2 rounded-full bg-rose-500" />
+                                          Missed Students ({contestParticipants[c.id].missed?.length || 0})
+                                        </h5>
+                                        <div className="border border-slate-200/60 dark:border-slate-800 rounded-xl overflow-hidden shadow-sm bg-white dark:bg-slate-900 text-xs">
+                                          <div className="overflow-x-auto max-h-72">
+                                            <table className="w-full text-left border-collapse">
+                                              <thead>
+                                                <tr className="bg-slate-50 dark:bg-slate-800/40 border-b border-slate-100 dark:border-slate-800 font-extrabold text-[9px] uppercase tracking-wider text-slate-400">
+                                                  <th className="py-2.5 px-3">Student / Roll</th>
+                                                  <th className="py-2.5 px-3">Batch</th>
+                                                  <th className="py-2.5 px-3">Username</th>
+                                                  <th className="py-2.5 px-3 text-right">Reason</th>
+                                                </tr>
+                                              </thead>
+                                              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/40">
+                                                {!contestParticipants[c.id].missed || contestParticipants[c.id].missed.length === 0 ? (
+                                                  <tr>
+                                                    <td colSpan={4} className="py-8 text-center text-slate-450 italic">No students missed this contest.</td>
+                                                  </tr>
+                                                ) : (
+                                                  contestParticipants[c.id].missed.map(p => (
+                                                    <tr key={p.student_id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/10">
+                                                      <td className="py-2.5 px-3">
+                                                        <span className="font-bold text-slate-800 dark:text-slate-200 block">{p.name}</span>
+                                                        <span className="text-[9px] text-slate-400 font-mono">{p.register_number}</span>
+                                                      </td>
+                                                      <td className="py-2.5 px-3 font-semibold text-slate-500">{p.academic_year}</td>
+                                                      <td className="py-2.5 px-3 font-semibold text-slate-500 dark:text-slate-400">{p.platform_username || '—'}</td>
+                                                      <td className="py-2.5 px-3 text-right">
+                                                        <span className={`inline-flex items-center rounded-lg px-2 py-0.5 text-[9px] font-extrabold border ${
+                                                          p.reason === 'Username Not Linked'
+                                                            ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400'
+                                                            : p.reason === 'Not Registered'
+                                                            ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/20 dark:text-rose-450'
+                                                            : 'bg-slate-50 text-slate-650 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
+                                                        }`}>
+                                                          {p.reason}
+                                                        </span>
+                                                      </td>
+                                                    </tr>
+                                                  ))
+                                                )}
+                                              </tbody>
+                                            </table>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
                                   )}
                                 </div>
                               ) : (
-                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                                  {[
-                                    { label: '1. Registration', value: c.is_registered ? 'Registered ✓' : 'Not Registered', sub: c.is_registered ? 'Platform verified' : '—', ok: c.is_registered },
-                                    { label: '2. Join Activity', value: c.is_joined ? 'Joined ✓' : 'No activity', sub: c.is_joined ? 'Contest Master join' : '—', ok: c.is_joined },
-                                    { label: '3. Attendance Record', value: c.is_joined ? 'PRESENT' : 'ABSENT', sub: 'Final status', ok: c.is_joined },
-                                  ].map((item, i) => (
-                                    <div key={i} className="bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-700/60 p-3 rounded-xl">
-                                      <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider block mb-1">{item.label}</span>
-                                      <span className={`text-xs font-extrabold ${item.ok ? 'text-emerald-600' : 'text-rose-500'}`}>{item.value}</span>
-                                      <span className="text-[10px] text-slate-400 block mt-0.5">{item.sub}</span>
+                                <div className="space-y-4">
+                                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                    {[
+                                      { label: '1. Registration Status', value: c.is_registered ? 'Registered ✓' : 'Not Registered', sub: c.is_registered ? 'Crawler verified' : '—', ok: c.is_registered },
+                                      { label: '2. Participation Action', value: c.is_joined ? 'Joined ✓' : 'No activity logged', sub: c.is_joined ? 'Contest action detected' : '—', ok: c.is_joined },
+                                      { label: '3. Final Attendance', value: c.attendance_status === 'PRESENT' ? 'PRESENT' : 'ABSENT', sub: c.attendance_source === 'MANUAL' ? 'Manual override by Faculty' : 'Automatic platform sync', ok: c.attendance_status === 'PRESENT' },
+                                    ].map((item, i) => (
+                                      <div key={i} className="bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-700/60 p-3 rounded-xl shadow-sm">
+                                        <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider block mb-1">{item.label}</span>
+                                        <span className={`text-xs font-black ${item.ok ? 'text-emerald-600' : 'text-rose-500'}`}>{item.value}</span>
+                                        <span className="text-[10px] text-slate-450 block mt-0.5 font-medium">{item.sub}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+
+                                  {/* Performance Stats Sub-card */}
+                                  {(c.rating !== null || c.global_rank !== null || c.problems_solved !== null) && (
+                                    <div className="bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-700/60 p-4 rounded-xl shadow-sm space-y-2">
+                                      <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider block border-b pb-1">Performance Details</span>
+                                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
+                                        {c.rating !== null && (
+                                          <div>
+                                            <span className="text-[10px] text-slate-400 block font-bold">New Rating</span>
+                                            <span className={`font-extrabold ${style.text}`}>{c.rating}</span>
+                                          </div>
+                                        )}
+                                        {c.rating_change !== null && c.rating_change !== 0 && (
+                                          <div>
+                                            <span className="text-[10px] text-slate-400 block font-bold">Rating Change</span>
+                                            <span className={`font-extrabold ${c.rating_change >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
+                                              {c.rating_change >= 0 ? `+${c.rating_change}` : c.rating_change}
+                                            </span>
+                                          </div>
+                                        )}
+                                        {c.global_rank !== null && (
+                                          <div>
+                                            <span className="text-[10px] text-slate-400 block font-bold">Rank</span>
+                                            <span className="font-extrabold text-slate-700 dark:text-slate-200">#{c.global_rank}</span>
+                                          </div>
+                                        )}
+                                        {c.problems_solved !== null && (
+                                          <div>
+                                            <span className="text-[10px] text-slate-400 block font-bold">Solved</span>
+                                            <span className="font-extrabold text-slate-700 dark:text-slate-200">{c.problems_solved} / {c.total_problems || 4}</span>
+                                          </div>
+                                        )}
+                                      </div>
                                     </div>
-                                  ))}
+                                  )}
                                 </div>
                               )}
                             </div>
@@ -1638,10 +1690,10 @@ function Contests() {
                   <button
                     key={page}
                     onClick={() => setCurrentPage(page)}
-                    className={`h-7 w-7 rounded-lg text-[11px] font-bold transition-all border ${
-                      page === currentPage
-                        ? 'bg-primary-600 text-white border-primary-600 shadow-sm shadow-primary-500/20'
-                        : 'bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800'
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
+                      currentPage === page
+                        ? `${style.bg} text-white ${style.border} shadow-sm`
+                        : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-650 hover:bg-slate-50 dark:hover:bg-slate-800'
                     }`}
                   >
                     {page}
@@ -1662,41 +1714,64 @@ function Contests() {
       </div>
 
       {/* ══════════════════════════════════════════════════════
-          OVERRIDE MODAL
+          MANUAL ATTENDANCE OVERRIDE MODAL
       ══════════════════════════════════════════════════════ */}
       {showOverrideModal && overrideContest && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm px-4">
-          <div className="relative w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6 shadow-2xl animate-fade-in">
-            <div className="flex items-center justify-between mb-5">
-              <h3 className="text-sm font-bold text-slate-800 dark:text-white">Manual Attendance Override</h3>
-              <button onClick={() => setShowOverrideModal(false)} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all">
+          <div className="relative w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-750 bg-white dark:bg-slate-900 p-6 shadow-2xl animate-fade-in">
+            <div className="flex items-center justify-between mb-4 pb-2 border-b">
+              <h3 className="text-sm font-extrabold text-slate-800 dark:text-white uppercase tracking-wider">Attendance Override</h3>
+              <button onClick={() => setShowOverrideModal(false)} className="p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-all">
                 <X className="h-4 w-4" />
               </button>
             </div>
-
-            <div className={`rounded-xl p-3 mb-4 border text-xs ${overrideStatus === 'present' ? 'bg-emerald-50 border-emerald-100 text-emerald-700 dark:bg-emerald-950/20 dark:border-emerald-900/30 dark:text-emerald-400' : 'bg-rose-50 border-rose-100 text-rose-700 dark:bg-rose-950/20 dark:border-rose-900/30 dark:text-rose-400'}`}>
-              Overriding <strong>{selectedStudentInfo?.name}</strong> ({selectedStudentInfo?.roll_no}) → marking as <strong className="uppercase">{overrideStatus}</strong> for <strong>{overrideContest.name}</strong>.
-            </div>
-
             <form onSubmit={handleOverrideSubmit} className="space-y-4">
+              <div className="bg-slate-50 dark:bg-slate-850 p-3.5 rounded-xl border">
+                <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-wide">Contest</span>
+                <span className="text-xs font-bold text-slate-700 dark:text-slate-205">{overrideContest.name}</span>
+                <span className="text-[10px] text-slate-400 block mt-1">Student: {selectedStudentInfo?.name} ({selectedStudentInfo?.roll_no})</span>
+              </div>
               <div className="space-y-1">
-                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Reason / Remarks *</label>
+                <label className="text-[10px] font-extrabold text-slate-500 uppercase tracking-widest block">Status</label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setOverrideStatus('present')}
+                    className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all border ${
+                      overrideStatus === 'present'
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-300 dark:bg-emerald-950/20'
+                        : 'bg-white border-slate-200 text-slate-500'
+                    }`}
+                  >
+                    ✓ PRESENT
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOverrideStatus('absent')}
+                    className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all border ${
+                      overrideStatus === 'absent'
+                        ? 'bg-rose-50 text-rose-700 border-rose-300 dark:bg-rose-950/20'
+                        : 'bg-white border-slate-200 text-slate-500'
+                    }`}
+                  >
+                    🔴 ABSENT
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-extrabold text-slate-500 uppercase tracking-widest block">Remarks</label>
                 <textarea
                   required
-                  rows={3}
                   value={overrideRemarks}
-                  onChange={e => setOverrideRemarks(e.target.value)}
-                  placeholder="Approved leave, special permission, technical issues…"
+                  onChange={(e) => setOverrideRemarks(e.target.value)}
+                  placeholder="e.g. Medical certificate verified, participated on secondary laptop..."
                   className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-3 text-xs outline-none focus:border-primary-400 dark:text-white resize-none"
+                  rows={3}
                 />
               </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <button type="button" onClick={() => setShowOverrideModal(false)}
-                  className="rounded-xl border border-slate-200 dark:border-slate-700 px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800">
-                  Cancel
-                </button>
-                <button type="submit" disabled={savingOverride || !overrideRemarks.trim()}
-                  className={`rounded-xl px-5 py-2 text-xs font-bold text-white shadow-sm flex items-center gap-1.5 disabled:opacity-50 ${overrideStatus === 'present' ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-rose-600 hover:bg-rose-500'}`}>
+              <div className="flex justify-end gap-2 pt-2 border-t">
+                <button type="button" onClick={() => setShowOverrideModal(false)} className="rounded-xl border px-4 py-2 text-xs font-bold text-slate-500">Cancel</button>
+                <button type="submit" disabled={savingOverride} className={`rounded-xl ${style.bg} text-white px-5 py-2 text-xs font-bold shadow-md hover:opacity-90 flex items-center gap-1.5`}>
                   {savingOverride ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Save Override'}
                 </button>
               </div>
@@ -1728,15 +1803,24 @@ function Contests() {
 
             <form onSubmit={handleFormSubmit} className="space-y-4">
               <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Platform</label>
+                <select name="platform" required value={formData.platform || activePlatform} onChange={handleInputChange}
+                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2.5 text-sm outline-none focus:border-primary-400 dark:text-slate-250">
+                  <option value="leetcode">LeetCode</option>
+                  <option value="codechef">CodeChef</option>
+                  <option value="codeforces">Codeforces</option>
+                </select>
+              </div>
+              <div className="space-y-1">
                 <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Contest ID (Slug)</label>
                 <input type="text" name="contestId" required value={formData.contestId} onChange={handleInputChange}
-                  placeholder="e.g. weekly-contest-390"
+                  placeholder="e.g. weekly-contest-390, codechef-starters-160, codeforces-2207"
                   className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2.5 text-sm outline-none focus:border-primary-400 dark:text-white" />
               </div>
               <div className="space-y-1">
                 <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Contest Name</label>
                 <input type="text" name="name" required value={formData.name} onChange={handleInputChange}
-                  placeholder="e.g. Weekly Contest 390"
+                  placeholder="e.g. Weekly Contest 390, CodeChef Starters 160..."
                   className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2.5 text-sm outline-none focus:border-primary-400 dark:text-white" />
               </div>
               <div className="grid grid-cols-2 gap-3">
@@ -1760,7 +1844,7 @@ function Contests() {
                   Cancel
                 </button>
                 <button type="submit" disabled={formLoading}
-                  className="rounded-xl bg-primary-600 hover:bg-primary-500 disabled:opacity-50 text-white px-5 py-2 text-xs font-bold shadow-md shadow-primary-500/20 flex items-center gap-1.5">
+                  className={`rounded-xl ${style.bg} hover:opacity-90 disabled:opacity-50 text-white px-5 py-2 text-xs font-bold shadow-md shadow-primary-500/20 flex items-center gap-1.5`}>
                   {formLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Save Contest'}
                 </button>
               </div>

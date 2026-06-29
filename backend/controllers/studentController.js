@@ -1,7 +1,12 @@
 const db = require('../config/db');
-const { verifyLeetCodeUsername, getUserLeetCodeStats } = require('../utils/leetcode');
+const { verifyLeetCode, getLeetCodeStats } = require('../services/leetcodeService');
+const { verifyCodeChef } = require('../services/codechefService');
+const { verifyCodeforces } = require('../services/codeforcesService');
+const { verifyHackerRank } = require('../services/hackerrankService');
+const { getUnifiedStudentProfile } = require('../services/platformAnalyticsService');
 const xlsx = require('xlsx');
 const { recalculateStudentSummary } = require('./attendanceController');
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // 1. Get all students with search and filtering
 async function getStudents(req, res) {
@@ -9,6 +14,7 @@ async function getStudents(req, res) {
   
   let sql = `
     SELECT u.id, u.name, u.roll_no, u.department, u.section, u.leetcode_username, 
+           u.codechef_username, u.codeforces_username, u.hackerrank_username,
            u.academic_batch, u.academic_start_date, u.academic_end_date, u.status, u.created_at,
            (SELECT COUNT(*) FROM Registrations r WHERE r.user_id = u.id) AS total_contests,
            (SELECT COUNT(*) FROM ParticipationLogs p WHERE p.user_id = u.id) AS attended_contests,
@@ -77,7 +83,7 @@ function formatDateForSql(dateInput) {
 
 // 2. Add single student
 async function addStudent(req, res) {
-  const { name, rollNo, department, section, leetcodeUsername, academicBatch, academicStartDate, academicEndDate } = req.body;
+  const { name, rollNo, department, section, leetcodeUsername, codechefUsername, codeforcesUsername, hackerrankUsername, academicBatch, academicStartDate, academicEndDate } = req.body;
 
   if (!name || !rollNo || !department || !section || !leetcodeUsername || !academicBatch || !academicStartDate || !academicEndDate) {
     return res.status(400).json({ success: false, message: 'All fields are required.' });
@@ -101,6 +107,9 @@ async function addStudent(req, res) {
     }
     const trimmedRoll = rollNo.trim().toUpperCase();
     const trimmedLC = leetcodeUsername.trim();
+    const trimmedChef = codechefUsername ? codechefUsername.trim() : null;
+    const trimmedForces = codeforcesUsername ? codeforcesUsername.trim() : null;
+    const trimmedRank = hackerrankUsername ? hackerrankUsername.trim() : null;
 
     // Check duplicates in DB
     const checkRoll = await db.query('SELECT id FROM Users WHERE roll_no = ?', [trimmedRoll]);
@@ -113,14 +122,66 @@ async function addStudent(req, res) {
       return res.status(400).json({ success: false, message: 'LeetCode username already registered.' });
     }
 
+    if (trimmedChef) {
+      const checkChef = await db.query('SELECT id FROM Users WHERE codechef_username = ?', [trimmedChef]);
+      if (checkChef && checkChef.length > 0) {
+        return res.status(400).json({ success: false, message: 'CodeChef username already registered.' });
+      }
+    }
+    if (trimmedForces) {
+      const checkForces = await db.query('SELECT id FROM Users WHERE codeforces_username = ?', [trimmedForces]);
+      if (checkForces && checkForces.length > 0) {
+        return res.status(400).json({ success: false, message: 'Codeforces username already registered.' });
+      }
+    }
+    if (trimmedRank) {
+      const checkRank = await db.query('SELECT id FROM Users WHERE hackerrank_username = ?', [trimmedRank]);
+      if (checkRank && checkRank.length > 0) {
+        return res.status(400).json({ success: false, message: 'HackerRank username already registered.' });
+      }
+    }
+
     // LeetCode Handle Verification
     console.log(`Verifying LeetCode username: ${trimmedLC}`);
-    const verifyResult = await verifyLeetCodeUsername(trimmedLC);
-    if (!verifyResult.exists) {
+    const verifyResult = await verifyLeetCode(trimmedLC);
+    if (!verifyResult.verified) {
       return res.status(400).json({ 
         success: false, 
-        message: `LeetCode handle '${trimmedLC}' does not exist. Please check spelling.` 
+        message: verifyResult.message || `LeetCode handle '${trimmedLC}' could not be verified.`
       });
+    }
+
+    // CodeChef Handle Verification
+    let finalChef = null;
+    if (trimmedChef) {
+      console.log(`Verifying CodeChef username: ${trimmedChef}`);
+      const verifyChef = await verifyCodeChef(trimmedChef);
+      if (!verifyChef.verified) {
+        return res.status(400).json({ success: false, message: verifyChef.message || `CodeChef handle '${trimmedChef}' could not be verified.` });
+      }
+      finalChef = verifyChef.username;
+    }
+
+    // Codeforces Handle Verification
+    let finalForces = null;
+    if (trimmedForces) {
+      console.log(`Verifying Codeforces username: ${trimmedForces}`);
+      const verifyForces = await verifyCodeforces(trimmedForces);
+      if (!verifyForces.verified) {
+        return res.status(400).json({ success: false, message: verifyForces.message || `Codeforces handle '${trimmedForces}' could not be verified.` });
+      }
+      finalForces = verifyForces.username;
+    }
+
+    // HackerRank Handle Verification
+    let finalRank = null;
+    if (trimmedRank) {
+      console.log(`Verifying HackerRank username: ${trimmedRank}`);
+      const verifyRank = await verifyHackerRank(trimmedRank);
+      if (!verifyRank.verified) {
+        return res.status(400).json({ success: false, message: verifyRank.message || `HackerRank handle '${trimmedRank}' could not be verified.` });
+      }
+      finalRank = verifyRank.username;
     }
 
     const sqlStartDate = formatDateForSql(academicStartDate);
@@ -128,9 +189,9 @@ async function addStudent(req, res) {
 
     // Insert student
     const result = await db.query(
-      `INSERT INTO Users (name, roll_no, department, section, leetcode_username, academic_batch, academic_start_date, academic_end_date, status) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
-      [name.trim(), trimmedRoll, department.trim(), section.trim().toUpperCase(), verifyResult.username, academicBatch.trim(), sqlStartDate, sqlEndDate]
+      `INSERT INTO Users (name, roll_no, department, section, leetcode_username, codechef_username, codeforces_username, hackerrank_username, academic_batch, academic_start_date, academic_end_date, status) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+      [name.trim(), trimmedRoll, department.trim(), section.trim().toUpperCase(), verifyResult.username, finalChef, finalForces, finalRank, academicBatch.trim(), sqlStartDate, sqlEndDate]
     );
 
     const newStudentId = result.insertId;
@@ -142,6 +203,11 @@ async function addStudent(req, res) {
       [newStudentId]
     );
 
+    // Seed empty profile records for other platforms
+    await db.query(`INSERT INTO CodeChefProfiles (user_id) VALUES (?)`, [newStudentId]);
+    await db.query(`INSERT INTO CodeforcesProfiles (user_id) VALUES (?)`, [newStudentId]);
+    await db.query(`INSERT INTO HackerRankProfiles (user_id) VALUES (?)`, [newStudentId]);
+
     return res.status(201).json({
       success: true,
       message: 'Student added successfully.',
@@ -152,6 +218,9 @@ async function addStudent(req, res) {
         department,
         section,
         leetcodeUsername: verifyResult.username,
+        codechefUsername: finalChef,
+        codeforcesUsername: finalForces,
+        hackerrankUsername: finalRank,
         academicBatch,
         academicStartDate: sqlStartDate,
         academicEndDate: sqlEndDate,
@@ -165,9 +234,10 @@ async function addStudent(req, res) {
 }
 
 // 3. Edit student
+// 3. Edit student
 async function editStudent(req, res) {
   const { id } = req.params;
-  const { name, rollNo, department, section, leetcodeUsername, academicBatch, academicStartDate, academicEndDate, status } = req.body;
+  const { name, rollNo, department, section, leetcodeUsername, codechefUsername, codeforcesUsername, hackerrankUsername, academicBatch, academicStartDate, academicEndDate, status } = req.body;
 
   if (!name || !rollNo || !department || !section || !leetcodeUsername || !academicBatch || !academicStartDate || !academicEndDate) {
     return res.status(400).json({ success: false, message: 'All fields are required.' });
@@ -197,6 +267,9 @@ async function editStudent(req, res) {
 
     const trimmedRoll = rollNo.trim().toUpperCase();
     const trimmedLC = leetcodeUsername.trim();
+    const trimmedChef = codechefUsername ? codechefUsername.trim() : null;
+    const trimmedForces = codeforcesUsername ? codeforcesUsername.trim() : null;
+    const trimmedRank = hackerrankUsername ? hackerrankUsername.trim() : null;
 
     // Check duplicate roll number
     const checkRoll = await db.query('SELECT id FROM Users WHERE roll_no = ? AND id != ?', [trimmedRoll, id]);
@@ -210,19 +283,73 @@ async function editStudent(req, res) {
       return res.status(400).json({ success: false, message: 'LeetCode username already in use by another student.' });
     }
 
+    if (trimmedChef) {
+      const checkChef = await db.query('SELECT id FROM Users WHERE codechef_username = ? AND id != ?', [trimmedChef, id]);
+      if (checkChef && checkChef.length > 0) {
+        return res.status(400).json({ success: false, message: 'CodeChef username already in use by another student.' });
+      }
+    }
+    if (trimmedForces) {
+      const checkForces = await db.query('SELECT id FROM Users WHERE codeforces_username = ? AND id != ?', [trimmedForces, id]);
+      if (checkForces && checkForces.length > 0) {
+        return res.status(400).json({ success: false, message: 'Codeforces username already in use by another student.' });
+      }
+    }
+    if (trimmedRank) {
+      const checkRank = await db.query('SELECT id FROM Users WHERE hackerrank_username = ? AND id != ?', [trimmedRank, id]);
+      if (checkRank && checkRank.length > 0) {
+        return res.status(400).json({ success: false, message: 'HackerRank username already in use by another student.' });
+      }
+    }
+
     let finalLCUsername = trimmedLC;
 
+    const currentLeetCode = String(currentStudent[0].leetcode_username || '').toLowerCase();
+    const currentCodeChef = String(currentStudent[0].codechef_username || '').toLowerCase();
+    const currentCodeforces = String(currentStudent[0].codeforces_username || '').toLowerCase();
+    const currentHackerRank = String(currentStudent[0].hackerrank_username || '').toLowerCase();
+
     // Re-verify LeetCode handle only if it changed
-    if (currentStudent[0].leetcode_username.toLowerCase() !== trimmedLC.toLowerCase()) {
+    if (currentLeetCode !== trimmedLC.toLowerCase()) {
       console.log(`Re-verifying LeetCode username: ${trimmedLC}`);
-      const verifyResult = await verifyLeetCodeUsername(trimmedLC);
-      if (!verifyResult.exists) {
+      const verifyResult = await verifyLeetCode(trimmedLC);
+      if (!verifyResult.verified) {
         return res.status(400).json({ 
           success: false, 
-          message: `LeetCode handle '${trimmedLC}' does not exist.` 
+          message: verifyResult.message || `LeetCode handle '${trimmedLC}' could not be verified.`
         });
       }
       finalLCUsername = verifyResult.username;
+    }
+
+    let finalChef = trimmedChef;
+    if (trimmedChef && currentCodeChef !== trimmedChef.toLowerCase()) {
+      console.log(`Re-verifying CodeChef username: ${trimmedChef}`);
+      const verifyChef = await verifyCodeChef(trimmedChef);
+      if (!verifyChef.verified) {
+        return res.status(400).json({ success: false, message: verifyChef.message || `CodeChef handle '${trimmedChef}' could not be verified.` });
+      }
+      finalChef = verifyChef.username;
+    }
+
+    let finalForces = trimmedForces;
+    if (trimmedForces && currentCodeforces !== trimmedForces.toLowerCase()) {
+      console.log(`Re-verifying Codeforces username: ${trimmedForces}`);
+      const verifyForces = await verifyCodeforces(trimmedForces);
+      if (!verifyForces.verified) {
+        return res.status(400).json({ success: false, message: verifyForces.message || `Codeforces handle '${trimmedForces}' could not be verified.` });
+      }
+      finalForces = verifyForces.username;
+    }
+
+    let finalRank = trimmedRank;
+    if (trimmedRank && currentHackerRank !== trimmedRank.toLowerCase()) {
+      console.log(`Re-verifying HackerRank username: ${trimmedRank}`);
+      const verifyRank = await verifyHackerRank(trimmedRank);
+      if (!verifyRank.verified) {
+        return res.status(400).json({ success: false, message: verifyRank.message || `HackerRank handle '${trimmedRank}' could not be verified.` });
+      }
+      finalRank = verifyRank.username;
     }
 
     const sqlStartDate = formatDateForSql(academicStartDate);
@@ -232,10 +359,16 @@ async function editStudent(req, res) {
     await db.query(
       `UPDATE Users 
        SET name = ?, roll_no = ?, department = ?, section = ?, leetcode_username = ?, 
+           codechef_username = ?, codeforces_username = ?, hackerrank_username = ?,
            academic_batch = ?, academic_start_date = ?, academic_end_date = ?, status = ? 
        WHERE id = ?`,
-      [name.trim(), trimmedRoll, department.trim(), section.trim().toUpperCase(), finalLCUsername, academicBatch.trim(), sqlStartDate, sqlEndDate, status || 'active', id]
+      [name.trim(), trimmedRoll, department.trim(), section.trim().toUpperCase(), finalLCUsername, finalChef, finalForces, finalRank, academicBatch.trim(), sqlStartDate, sqlEndDate, status || 'active', id]
     );
+
+    // Seed missing profile cache tables if they don't exist
+    await db.query(`INSERT IGNORE INTO CodeChefProfiles (user_id) VALUES (?)`, [id]);
+    await db.query(`INSERT IGNORE INTO CodeforcesProfiles (user_id) VALUES (?)`, [id]);
+    await db.query(`INSERT IGNORE INTO HackerRankProfiles (user_id) VALUES (?)`, [id]);
 
     return res.json({
       success: true,
@@ -305,6 +438,9 @@ async function bulkImportStudents(req, res) {
         const sec = getVal(row, ['section', 'sec', 'class']);
         const academicBatch = getVal(row, ['academicbatch', 'batch', 'academicyear', 'year']);
         const lcUsername = getVal(row, ['leetcodeusername', 'leetcode', 'leetcodehandle', 'handle']);
+        const codechefUsername = getVal(row, ['codechefusername', 'codechef', 'codechefhandle']);
+        const codeforcesUsername = getVal(row, ['codeforcesusername', 'codeforces', 'codeforceshandle']);
+        const hackerrankUsername = getVal(row, ['hackerrankusername', 'hackerrank', 'hackerrankhandle']);
         
         let academicStartDate = getVal(row, ['academicstartdate', 'startdate', 'admissiondate']);
         let academicEndDate = getVal(row, ['academicenddate', 'enddate', 'graduationdate']);
@@ -345,6 +481,9 @@ async function bulkImportStudents(req, res) {
 
         const trimmedRoll = rollNo.toUpperCase();
         const trimmedLC = lcUsername.trim();
+        const trimmedChef = codechefUsername ? codechefUsername.trim() : null;
+        const trimmedForces = codeforcesUsername ? codeforcesUsername.trim() : null;
+        const trimmedRank = hackerrankUsername ? hackerrankUsername.trim() : null;
 
         // DB uniqueness checks
         const checkRoll = await db.query('SELECT id FROM Users WHERE roll_no = ?', [trimmedRoll]);
@@ -359,11 +498,66 @@ async function bulkImportStudents(req, res) {
           return;
         }
 
+        if (trimmedChef) {
+          const checkChef = await db.query('SELECT id FROM Users WHERE codechef_username = ?', [trimmedChef]);
+          if (checkChef && checkChef.length > 0) {
+            duplicates.push(`Row ${globalRowIndex} (CodeChef: ${trimmedChef}): CodeChef username already registered.`);
+            return;
+          }
+        }
+        if (trimmedForces) {
+          const checkForces = await db.query('SELECT id FROM Users WHERE codeforces_username = ?', [trimmedForces]);
+          if (checkForces && checkForces.length > 0) {
+            duplicates.push(`Row ${globalRowIndex} (Codeforces: ${trimmedForces}): Codeforces username already registered.`);
+            return;
+          }
+        }
+        if (trimmedRank) {
+          const checkRank = await db.query('SELECT id FROM Users WHERE hackerrank_username = ?', [trimmedRank]);
+          if (checkRank && checkRank.length > 0) {
+            duplicates.push(`Row ${globalRowIndex} (HackerRank: ${trimmedRank}): HackerRank username already registered.`);
+            return;
+          }
+        }
+
         // LeetCode verification
-        const verifyResult = await verifyLeetCodeUsername(trimmedLC);
-        if (!verifyResult.exists) {
-          invalidHandles.push(`Row ${globalRowIndex} (LeetCode: ${trimmedLC}): Account does not exist on LeetCode.`);
+        const verifyResult = await verifyLeetCode(trimmedLC);
+        if (!verifyResult.verified) {
+          invalidHandles.push(`Row ${globalRowIndex} (LeetCode: ${trimmedLC}): ${verifyResult.message || 'Account could not be verified on LeetCode.'}`);
           return;
+        }
+
+        // CodeChef verification
+        let finalChef = null;
+        if (trimmedChef) {
+          const verifyChef = await verifyCodeChef(trimmedChef);
+          if (!verifyChef.verified) {
+            invalidHandles.push(`Row ${globalRowIndex} (CodeChef: ${trimmedChef}): ${verifyChef.message || 'Account could not be verified on CodeChef.'}`);
+            return;
+          }
+          finalChef = verifyChef.username;
+        }
+
+        // Codeforces verification
+        let finalForces = null;
+        if (trimmedForces) {
+          const verifyForces = await verifyCodeforces(trimmedForces);
+          if (!verifyForces.verified) {
+            invalidHandles.push(`Row ${globalRowIndex} (Codeforces: ${trimmedForces}): ${verifyForces.message || 'Account could not be verified on Codeforces.'}`);
+            return;
+          }
+          finalForces = verifyForces.username;
+        }
+
+        // HackerRank verification
+        let finalRank = null;
+        if (trimmedRank) {
+          const verifyRank = await verifyHackerRank(trimmedRank);
+          if (!verifyRank.verified) {
+            invalidHandles.push(`Row ${globalRowIndex} (HackerRank: ${trimmedRank}): ${verifyRank.message || 'Account could not be verified on HackerRank.'}`);
+            return;
+          }
+          finalRank = verifyRank.username;
         }
 
         const sqlStartDate = formatDateForSql(academicStartDate);
@@ -372,9 +566,9 @@ async function bulkImportStudents(req, res) {
         try {
           // Insert Student
           const result = await db.query(
-            `INSERT INTO Users (name, roll_no, department, section, leetcode_username, academic_batch, academic_start_date, academic_end_date, status) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
-            [name, trimmedRoll, dept, sec.toUpperCase(), verifyResult.username, academicBatch, sqlStartDate, sqlEndDate]
+            `INSERT INTO Users (name, roll_no, department, section, leetcode_username, codechef_username, codeforces_username, hackerrank_username, academic_batch, academic_start_date, academic_end_date, status) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+            [name, trimmedRoll, dept, sec.toUpperCase(), verifyResult.username, finalChef, finalForces, finalRank, academicBatch, sqlStartDate, sqlEndDate]
           );
 
           const newStudentId = result.insertId;
@@ -385,6 +579,11 @@ async function bulkImportStudents(req, res) {
              VALUES (?, 1500.00, 1500.00, NULL, 0)`,
             [newStudentId]
           );
+
+          // Seed empty profiles for other platforms
+          await db.query(`INSERT INTO CodeChefProfiles (user_id) VALUES (?)`, [newStudentId]);
+          await db.query(`INSERT INTO CodeforcesProfiles (user_id) VALUES (?)`, [newStudentId]);
+          await db.query(`INSERT INTO HackerRankProfiles (user_id) VALUES (?)`, [newStudentId]);
 
           imported.push({ rollNo: trimmedRoll, name, leetcodeUsername: verifyResult.username });
         } catch (dbErr) {
@@ -523,10 +722,32 @@ async function getArchivedSummary(req, res) {
 async function checkUsername(req, res) {
   const { username } = req.params;
   try {
-    const result = await verifyLeetCodeUsername(username);
-    return res.json(result);
+    const result = await verifyLeetCode(username);
+    return res.json({ exists: result.verified, username: result.username, rating: result.rating, globalRanking: result.rank, error: result.message });
   } catch (err) {
     return res.status(500).json({ exists: false, error: err.message });
+  }
+}
+
+async function getUnifiedProfileById(req, res) {
+  const { id } = req.params;
+  const { refresh } = req.query;
+  try {
+    const student = await db.query('SELECT id, name, roll_no, department, section, academic_batch, leetcode_username, codechef_username, codeforces_username, hackerrank_username FROM Users WHERE id = ?', [id]);
+    if (!student || student.length === 0) {
+      return res.status(404).json({ success: false, message: 'Student not found.' });
+    }
+
+    if (refresh === 'true') {
+      const { syncStudentProfiles } = require('../utils/scheduler');
+      await syncStudentProfiles(Number(id));
+    }
+
+    const profile = await getUnifiedStudentProfile(Number(id));
+    return res.json({ success: true, data: profile });
+  } catch (error) {
+    console.error('Error fetching unified student profile:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch unified student profile.' });
   }
 }
 
@@ -546,10 +767,9 @@ async function getLeetCodeStatsById(req, res) {
 
     const { leetcode_username } = student[0];
     
-    // 2. Query LeetCode stats GraphQL
-    const stats = await getUserLeetCodeStats(leetcode_username);
-    if (!stats.success) {
-      return res.status(404).json({ success: false, message: stats.error || 'Failed to fetch LeetCode statistics.' });
+    const stats = await getLeetCodeStats(leetcode_username);
+    if (!stats.verified) {
+      return res.status(404).json({ success: false, message: stats.message || 'Failed to fetch LeetCode statistics.' });
     }
 
     return res.json({
@@ -607,7 +827,255 @@ async function getUniqueSections(req, res) {
   }
 }
 
+// Check Platform Username Helper
+async function checkPlatformUsername(req, res) {
+  const { platform, username } = req.params;
+  try {
+    let result = { verified: false };
+    if (platform === 'leetcode') {
+      result = await verifyLeetCode(username);
+    } else if (platform === 'codechef') {
+      result = await verifyCodeChef(username);
+    } else if (platform === 'codeforces') {
+      result = await verifyCodeforces(username);
+    } else if (platform === 'hackerrank') {
+      result = await verifyHackerRank(username);
+    } else {
+      return res.status(400).json({ success: false, message: 'Invalid platform name.' });
+    }
+    return res.json({ exists: result.verified, username: result.username, rating: result.rating, globalRanking: result.rank, error: result.message });
+  } catch (err) {
+    return res.status(500).json({ exists: false, error: err.message });
+  }
+}
+
+async function getStudentsDataHealth(req, res) {
+  try {
+    // 1. Fetch departments
+    const deptRows = await db.query("SELECT code FROM departments WHERE status = 'active'");
+    const activeDepts = new Set(deptRows.map(d => d.code.toUpperCase()));
+
+    // 2. Fetch all active students
+    const users = await db.query(
+      `SELECT id, name, roll_no, department, section, academic_batch, leetcode_username, codechef_username, codeforces_username, hackerrank_username, created_at
+       FROM Users
+       WHERE status = 'active'`
+    );
+
+    // 3. Fetch profiles from all platforms
+    const lcRows = await db.query("SELECT user_id, current_rating, problems_solved, last_synced FROM LeetCodeProfiles");
+    const ccRows = await db.query("SELECT user_id, current_rating, problems_solved, last_synced FROM CodeChefProfiles");
+    const cfRows = await db.query("SELECT user_id, current_rating, problems_solved, last_synced FROM CodeforcesProfiles");
+    const hrRows = await db.query("SELECT user_id, problems_solved, last_synced FROM HackerRankProfiles");
+
+    // Index profiles by user_id
+    const lcMap = new Map(lcRows.map(r => [r.user_id, r]));
+    const ccMap = new Map(ccRows.map(r => [r.user_id, r]));
+    const cfMap = new Map(cfRows.map(r => [r.user_id, r]));
+    const hrMap = new Map(hrRows.map(r => [r.user_id, r]));
+
+    // 4. Duplicate checks
+    const rollNoCounts = new Map();
+    const lcCounts = new Map();
+    const ccCounts = new Map();
+    const cfCounts = new Map();
+    const hrCounts = new Map();
+
+    users.forEach(u => {
+      const roll = (u.roll_no || '').trim().toLowerCase();
+      const lc = (u.leetcode_username || '').trim().toLowerCase();
+      const cc = (u.codechef_username || '').trim().toLowerCase();
+      const cf = (u.codeforces_username || '').trim().toLowerCase();
+      const hr = (u.hackerrank_username || '').trim().toLowerCase();
+
+      if (roll) rollNoCounts.set(roll, (rollNoCounts.get(roll) || 0) + 1);
+      if (lc) lcCounts.set(lc, (lcCounts.get(lc) || 0) + 1);
+      if (cc) ccCounts.set(cc, (ccCounts.get(cc) || 0) + 1);
+      if (cf) cfCounts.set(cf, (cfCounts.get(cf) || 0) + 1);
+      if (hr) hrCounts.set(hr, (hrCounts.get(hr) || 0) + 1);
+    });
+
+    let duplicateCount = 0;
+    let invalidCount = 0;
+
+    // Platform connections success counters
+    const platformStats = {
+      leetcode: { total: 0, synced: 0 },
+      codechef: { total: 0, synced: 0 },
+      codeforces: { total: 0, synced: 0 },
+      hackerrank: { total: 0, synced: 0 }
+    };
+
+    const studentHealths = users.map(user => {
+      const missingFields = [];
+      const syncErrors = [];
+      let isDuplicate = false;
+      let isInvalid = false;
+
+      // Validate core fields
+      if (!user.name || !user.name.trim()) { missingFields.push('name'); isInvalid = true; }
+      if (!user.roll_no || !user.roll_no.trim()) { missingFields.push('roll_no'); isInvalid = true; }
+      if (!user.section || !user.section.trim()) missingFields.push('section');
+      if (!user.academic_batch || !user.academic_batch.trim()) missingFields.push('academic_batch');
+      if (!user.department || !user.department.trim()) {
+        missingFields.push('department');
+        isInvalid = true;
+      } else if (!activeDepts.has(user.department.toUpperCase())) {
+        missingFields.push('invalid_department_mapping');
+        isInvalid = true;
+      }
+
+      // Check duplicates
+      const rVal = (user.roll_no || '').trim().toLowerCase();
+      if (rVal && rollNoCounts.get(rVal) > 1) {
+        syncErrors.push(`Duplicate Roll Number: ${user.roll_no}`);
+        isDuplicate = true;
+      }
+      
+      const checkPlatformDup = (username, platformName, countMap) => {
+        const val = (username || '').trim().toLowerCase();
+        if (val && countMap.get(val) > 1) {
+          syncErrors.push(`Duplicate ${platformName} Handle: ${username}`);
+          isDuplicate = true;
+        }
+      };
+
+      checkPlatformDup(user.leetcode_username, 'LeetCode', lcCounts);
+      checkPlatformDup(user.codechef_username, 'CodeChef', ccCounts);
+      checkPlatformDup(user.codeforces_username, 'Codeforces', cfCounts);
+      checkPlatformDup(user.hackerrank_username, 'HackerRank', hrCounts);
+
+      // Check platform sync status
+      const getPlatformStatus = (platform, username, profileMap, statObj) => {
+        if (!username || !username.trim()) {
+          return { connected: false };
+        }
+        statObj.total++;
+        const profile = profileMap.get(user.id);
+        if (!profile || !profile.last_synced) {
+          syncErrors.push(`${platform} profile has never successfully synchronized`);
+          return { connected: true, synced: false, username };
+        }
+        statObj.synced++;
+        return {
+          connected: true,
+          synced: true,
+          username,
+          lastSynced: profile.last_synced,
+          problemsSolved: profile.problems_solved || 0,
+          currentRating: profile.current_rating || 0
+        };
+      };
+
+      const connections = {
+        leetcode: getPlatformStatus('LeetCode', user.leetcode_username, lcMap, platformStats.leetcode),
+        codechef: getPlatformStatus('CodeChef', user.codechef_username, ccMap, platformStats.codechef),
+        codeforces: getPlatformStatus('Codeforces', user.codeforces_username, cfMap, platformStats.codeforces),
+        hackerrank: getPlatformStatus('HackerRank', user.hackerrank_username, hrMap, platformStats.hackerrank)
+      };
+
+      if (!user.leetcode_username || !user.leetcode_username.trim()) {
+        missingFields.push('leetcode_username (Required)');
+      }
+
+      // Calculate health score (starts at 100)
+      let score = 100;
+      
+      const hasAnyConnection = Object.values(connections).some(conn => conn.connected);
+      if (!hasAnyConnection) {
+        score -= 15;
+        syncErrors.push('No platform accounts connected');
+      } else {
+        Object.entries(connections).forEach(([platName, conn]) => {
+          if (conn.connected && !conn.synced) {
+            score -= 15;
+          }
+        });
+      }
+
+      missingFields.forEach(f => {
+        score -= 10;
+      });
+
+      // Clamp score
+      score = Math.max(0, Math.min(100, score));
+
+      // Health indicator
+      let healthIndicator = 'Needs Attention';
+      if (score >= 85) healthIndicator = 'Healthy';
+      else if (score >= 50) healthIndicator = 'Partial';
+
+      if (isDuplicate) duplicateCount++;
+      if (isInvalid) invalidCount++;
+
+      return {
+        id: user.id,
+        name: user.name,
+        rollNo: user.roll_no,
+        department: user.department,
+        section: user.section,
+        batch: user.academic_batch,
+        healthScore: score,
+        healthIndicator,
+        connections,
+        missingFields,
+        syncErrors,
+        createdAt: user.created_at
+      };
+    });
+
+    // 5. Global statistics calculation
+    const totalStudents = studentHealths.length;
+    const healthyCount = studentHealths.filter(s => s.healthIndicator === 'Healthy').length;
+    const partialCount = studentHealths.filter(s => s.healthIndicator === 'Partial').length;
+    const needsAttentionCount = studentHealths.filter(s => s.healthIndicator === 'Needs Attention').length;
+
+    // Platform sync rates
+    const getRate = (stat) => stat.total > 0 ? Math.round((stat.synced / stat.total) * 100) : 100;
+    const rateLC = getRate(platformStats.leetcode);
+    const rateCC = getRate(platformStats.codechef);
+    const rateCF = getRate(platformStats.codeforces);
+    const rateHR = getRate(platformStats.hackerrank);
+
+    const totalConnections = platformStats.leetcode.total + platformStats.codechef.total + platformStats.codeforces.total + platformStats.hackerrank.total;
+    const totalSynced = platformStats.leetcode.synced + platformStats.codechef.synced + platformStats.codeforces.synced + platformStats.hackerrank.synced;
+    const overallRate = totalConnections > 0 ? Math.round((totalSynced / totalConnections) * 100) : 100;
+
+    // System Health percentage = average of all student health scores
+    const avgHealthScore = totalStudents > 0 
+      ? Math.round(studentHealths.reduce((sum, s) => sum + s.healthScore, 0) / totalStudents)
+      : 100;
+
+    const aggregates = {
+      totalStudents,
+      healthyCount,
+      partialCount,
+      needsAttentionCount,
+      duplicateCount,
+      invalidCount,
+      platformSyncRate: {
+        leetcode: rateLC,
+        codechef: rateCC,
+        codeforces: rateCF,
+        hackerrank: rateHR,
+        overall: overallRate
+      },
+      systemHealthPercentage: avgHealthScore
+    };
+
+    return res.json({
+      success: true,
+      aggregates,
+      students: studentHealths
+    });
+  } catch (error) {
+    console.error('Error fetching students data health audit:', error);
+    return res.status(500).json({ success: false, message: 'Internal server error during diagnostic audit.' });
+  }
+}
+
 module.exports = {
+  getStudentsDataHealth,
   getStudents,
   addStudent,
   editStudent,
@@ -617,6 +1085,8 @@ module.exports = {
   restoreStudents,
   getArchivedSummary,
   checkUsername,
+  checkPlatformUsername,
+  getUnifiedProfileById,
   getLeetCodeStatsById,
   getUniqueBatches,
   getUniqueSections

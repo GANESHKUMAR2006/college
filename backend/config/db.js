@@ -104,6 +104,26 @@ async function initializeDatabase() {
       console.log('[DB] Database tables already exist. Skipping schema initialization.');
     }
 
+    // Ensure StudentPlatformSync table exists
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS StudentPlatformSync (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        platform VARCHAR(50) NOT NULL,
+        username VARCHAR(255) DEFAULT NULL,
+        sync_status VARCHAR(20) DEFAULT 'Never Synced',
+        last_successful_sync TIMESTAMP NULL DEFAULT NULL,
+        last_attempt TIMESTAMP NULL DEFAULT NULL,
+        retry_count INT DEFAULT 0,
+        failure_reason TEXT DEFAULT NULL,
+        failure_category VARCHAR(100) DEFAULT NULL,
+        data_completeness INT DEFAULT 0,
+        next_retry TIMESTAMP NULL DEFAULT NULL,
+        UNIQUE KEY idx_user_platform (user_id, platform),
+        FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB
+    `);
+
   } catch (error) {
     isConnecting = false;
     isConnected = false;
